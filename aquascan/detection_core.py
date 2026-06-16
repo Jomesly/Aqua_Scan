@@ -1,0 +1,214 @@
+import cv2
+from ultralytics import YOLO
+
+from model_config import (
+    CAMERA_INDICES,
+    CALIBRATION_PRESETS,
+    CONFIDENCE_THRESHOLD,
+    DETECTION_CLASS_IDS,
+    MAX_BOX_AREA_RATIO,
+    MAX_BOX_ASPECT_RATIO,
+    MIN_BOX_AREA_RATIO,
+    MIN_BOX_ASPECT_RATIO,
+    MODEL_PATH,
+    PERSON_CLASS_ID,
+    PERSON_CONFIDENCE_THRESHOLD,
+    PERSON_MODEL_PATH,
+    PERSON_SUPPRESSION_IOU,
+)
+
+
+class Calibration:
+    def __init__(
+        self,
+        confidence=CONFIDENCE_THRESHOLD,
+        max_box_area_ratio=MAX_BOX_AREA_RATIO,
+        min_box_area_ratio=MIN_BOX_AREA_RATIO,
+        min_box_aspect_ratio=MIN_BOX_ASPECT_RATIO,
+        max_box_aspect_ratio=MAX_BOX_ASPECT_RATIO,
+    ):
+        self.confidence = confidence
+        self.max_box_area_ratio = max_box_area_ratio
+        self.min_box_area_ratio = min_box_area_ratio
+        self.min_box_aspect_ratio = min_box_aspect_ratio
+        self.max_box_aspect_ratio = max_box_aspect_ratio
+
+    def as_dict(self):
+        return {
+            "confidence": self.confidence,
+            "max_box_area_ratio": self.max_box_area_ratio,
+            "min_box_area_ratio": self.min_box_area_ratio,
+            "min_box_aspect_ratio": self.min_box_aspect_ratio,
+            "max_box_aspect_ratio": self.max_box_aspect_ratio,
+        }
+
+    def apply_preset(self, name):
+        preset = CALIBRATION_PRESETS.get(name)
+        if not preset:
+            raise ValueError(f"Unknown calibration preset: {name}")
+
+        self.confidence = preset["confidence"]
+        self.min_box_area_ratio = preset["min_box_area_ratio"]
+        self.max_box_area_ratio = preset["max_box_area_ratio"]
+
+
+def load_model():
+    if not MODEL_PATH.exists():
+        raise FileNotFoundError(f"Model not found: {MODEL_PATH}")
+    return YOLO(str(MODEL_PATH))
+
+
+def load_person_model():
+    if not PERSON_MODEL_PATH.exists():
+        return None
+    return YOLO(str(PERSON_MODEL_PATH))
+
+
+def open_camera():
+    for index in CAMERA_INDICES:
+        cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
+        if not cap.isOpened():
+            cap.release()
+            continue
+
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+
+        for _ in range(10):
+            ret, frame = cap.read()
+            if ret and frame is not None:
+                print(f"Using webcam index {index}")
+                return cap
+
+        cap.release()
+
+    return None
+
+
+def filter_result(result, frame_shape, calibration):
+    frame_area = frame_shape[0] * frame_shape[1]
+    keep = []
+
+    for index, box in enumerate(result.boxes):
+        x1, y1, x2, y2 = box.xyxy[0].tolist()
+        width = max(x2 - x1, 1)
+        height = max(y2 - y1, 1)
+        area_ratio = (width * height) / frame_area
+        aspect_ratio = width / height
+
+        if area_ratio < calibration.min_box_area_ratio:
+            continue
+        if area_ratio > calibration.max_box_area_ratio:
+            continue
+        if aspect_ratio < calibration.min_box_aspect_ratio:
+            continue
+        if aspect_ratio > calibration.max_box_aspect_ratio:
+            continue
+
+        keep.append(index)
+
+    result.boxes = result.boxes[keep] if keep else result.boxes[:0]
+    return result
+
+
+def box_iou(box_a, box_b):
+    ax1, ay1, ax2, ay2 = box_a
+    bx1, by1, bx2, by2 = box_b
+    inter_x1 = max(ax1, bx1)
+    inter_y1 = max(ay1, by1)
+    inter_x2 = min(ax2, bx2)
+    inter_y2 = min(ay2, by2)
+    inter_width = max(inter_x2 - inter_x1, 0)
+    inter_height = max(inter_y2 - inter_y1, 0)
+    intersection = inter_width * inter_height
+    area_a = max(ax2 - ax1, 0) * max(ay2 - ay1, 0)
+    area_b = max(bx2 - bx1, 0) * max(by2 - by1, 0)
+    union = area_a + area_b - intersection
+    return intersection / union if union else 0
+
+
+def box_center_inside(inner_box, outer_box):
+    x1, y1, x2, y2 = inner_box
+    ox1, oy1, ox2, oy2 = outer_box
+    cx = (x1 + x2) / 2
+    cy = (y1 + y2) / 2
+    return ox1 <= cx <= ox2 and oy1 <= cy <= oy2
+
+
+def suppress_person_overlaps(frame, result, person_model):
+    if person_model is None or not len(result.boxes):
+        return result, 0
+
+    person_results = person_model(
+        frame,
+        verbose=False,
+        conf=PERSON_CONFIDENCE_THRESHOLD,
+        classes=[PERSON_CLASS_ID],
+    )
+    person_boxes = [box.xyxy[0].tolist() for box in person_results[0].boxes]
+    if not person_boxes:
+        return result, 0
+
+    keep = []
+    suppressed = 0
+    for index, box in enumerate(result.boxes):
+        candidate = box.xyxy[0].tolist()
+        overlaps_person = any(
+            box_iou(candidate, person_box) > PERSON_SUPPRESSION_IOU
+            or box_center_inside(candidate, person_box)
+            for person_box in person_boxes
+        )
+        if overlaps_person:
+            suppressed += 1
+            continue
+        keep.append(index)
+
+    result.boxes = result.boxes[keep] if keep else result.boxes[:0]
+    return result, suppressed
+
+
+def detect_fish(frame, model, calibration, person_model=None):
+    classes = DETECTION_CLASS_IDS
+    results = model(
+        frame,
+        verbose=False,
+        conf=calibration.confidence,
+        classes=classes,
+    )
+    result = filter_result(results[0], frame.shape, calibration)
+    result, suppressed = suppress_person_overlaps(frame, result, person_model)
+    result.aquascan_suppressed_people = suppressed
+    return result
+
+
+def result_metrics(result):
+    confidences = [float(box.conf[0]) for box in result.boxes]
+    class_counts = {}
+
+    for box in result.boxes:
+        class_id = int(box.cls[0])
+        class_name = result.names.get(class_id, str(class_id))
+        class_counts[class_name] = class_counts.get(class_name, 0) + 1
+
+    return {
+        "count": len(result.boxes),
+        "max_confidence": max(confidences) if confidences else 0.0,
+        "avg_confidence": sum(confidences) / len(confidences) if confidences else 0.0,
+        "class_counts": class_counts,
+        "suppressed_people": getattr(result, "aquascan_suppressed_people", 0),
+    }
+
+
+def annotate_frame(frame, result, calibration):
+    annotated = result.plot()
+    metrics = result_metrics(result)
+    cv2.putText(
+        annotated,
+        f"Detections: {metrics['count']} | conf >= {calibration.confidence:.2f}",
+        (10, 30),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.85,
+        (0, 200, 255),
+        2,
+    )
+    return annotated, metrics
