@@ -11,6 +11,7 @@ from detection_core import (
     Calibration,
     annotate_frame,
     detect_fish,
+    enumerate_camera_names,
     list_cameras,
     load_model,
     load_person_model,
@@ -79,9 +80,11 @@ def camera_label(source, enabled=True):
         return "Off"
     if source in (None, "", "auto"):
         return "Auto"
-    if str(source).isdigit():
-        return f"Camera {source}"
-    return str(source)
+    text = str(source)
+    if text.isdigit():
+        names = enumerate_camera_names()
+        return names.get(int(text), f"Camera {text}")
+    return text
 
 
 def get_camera_state():
@@ -362,15 +365,8 @@ def dashboard():
             <div class="control-row"><span>Choose camera</span><strong id="cameraSourceLabel">auto</strong></div>
             <select id="cameraSource" aria-label="Camera source">
               <option value="auto">Auto (first available)</option>
-              <option value="0">Camera 0</option>
-              <option value="1">Camera 1</option>
-              <option value="2">Camera 2</option>
-              <option value="3">Camera 3</option>
-              <option value="4">Camera 4</option>
-              <option value="5">Camera 5</option>
-              <option value="6">Camera 6</option>
-              <option value="7">Camera 7</option>
             </select>
+            <div id="cameraListHint" class="hint">Only plugged-in cameras are listed (OBS-style). Plug a camera in, then Scan.</div>
           </div>
           <div class="control">
             <div class="control-row"><span>Custom source (index or URL)</span></div>
@@ -529,14 +525,37 @@ def dashboard():
       return select;
     }
 
+    async function scanCameras({ applyToMain = true } = {}) {
+      $("cameraMessage").textContent = "Scanning cameras...";
+      try {
+        const res = await fetch("/api/cameras");
+        const data = await res.json();
+        const detected = data.detected || [];
+        if (applyToMain) {
+          fillSelect($("cameraSource"), detected, true);
+        }
+        $("cameraListHint").textContent = detected.length
+          ? `${detected.length} connected: ${detected.map((camera) => camera.label).join(", ")}`
+          : "No cameras found - plug one in and Scan";
+        $("cameraMessage").textContent = detected.length
+          ? `Found ${detected.length} camera${detected.length === 1 ? "" : "s"}`
+          : "No cameras found";
+        return detected;
+      } catch (error) {
+        $("cameraMessage").textContent = "Camera scan failed";
+        return [];
+      }
+    }
+
     async function toggleCamera() {
       const currentlyEnabled = $("toggleCamera").dataset.enabled !== "false";
       if (currentlyEnabled) {
         $("toggleCamera").textContent = "Stopping...";
         try {
-          const data = await setCameraPower(false);
+          await setCameraPower(false);
           hideStartPicker();
           $("cameraMessage").textContent = "Camera stopped - feed blacked out";
+          await scanCameras();
           await refresh();
         } catch (error) {
           $("cameraMessage").textContent = "Failed to toggle camera";
@@ -546,23 +565,18 @@ def dashboard():
       }
 
       $("toggleCamera").textContent = "Scanning...";
-      $("cameraMessage").textContent = "Scanning for cameras...";
       try {
-        const res = await fetch("/api/cameras");
-        const data = await res.json();
-        const detected = data.detected || [];
-
-        fillSelect($("cameraSource"), detected || [], true);
+        const detected = await scanCameras();
 
         if (detected.length === 0) {
           await startCameraWithSource("auto");
-          $("cameraMessage").textContent = "No camera detected - started with Auto";
+          $("cameraMessage").textContent = "No camera found - started with Auto";
           return;
         }
 
         if (detected.length === 1) {
           await startCameraWithSource(detected[0].source);
-          $("cameraMessage").textContent = `Single camera found - started ${detected[0].label}`;
+          $("cameraMessage").textContent = `Started ${detected[0].label}`;
           return;
         }
 
@@ -570,10 +584,10 @@ def dashboard():
         fillSelect(select, detected, false);
         select.value = detected[0].source;
         $("startPickerLabel").textContent = detected[0].label;
-        $("startPickerHint").textContent = `${detected.length} cameras detected. Choose one to start the feed.`;
+        $("startPickerHint").textContent = `${detected.length} cameras connected. Choose one to start the feed.`;
         $("startPicker").hidden = false;
         $("startPicker").classList.add("visible");
-        $("cameraMessage").textContent = `${detected.length} cameras detected - choose one below`;
+        $("cameraMessage").textContent = `${detected.length} cameras connected - choose one below`;
         $("toggleCamera").textContent = "Start camera";
       } catch (error) {
         $("cameraMessage").textContent = "Camera scan failed";
@@ -626,24 +640,13 @@ def dashboard():
       $("toggleCamera").textContent = "Start camera";
       $("cameraMessage").textContent = "Start cancelled - camera remains off";
     });
-    $("scanCameras").addEventListener("click", async () => {
-      $("cameraMessage").textContent = "Scanning cameras...";
-      try {
-        const res = await fetch("/api/cameras");
-        const data = await res.json();
-        fillSelect($("cameraSource"), data.cameras || [], true);
-        const detected = data.detected || [];
-        $("cameraMessage").textContent = detected.length
-          ? `Found ${detected.length} working camera${detected.length === 1 ? "" : "s"}`
-          : "No working cameras detected - keep Auto or type an index";
-      } catch (error) {
-        $("cameraMessage").textContent = "Camera scan failed";
-      }
-    });
+    $("scanCameras").addEventListener("click", () => scanCameras());
 
     syncLabels();
     setInterval(refresh, 750);
     refresh();
+    scanCameras();
+    setInterval(scanCameras, 4000);
   </script>
 </body>
 </html>
@@ -677,12 +680,9 @@ def cameras():
     try:
         found = list_cameras()
     except Exception as exc:
-        return {"cameras": [], "error": str(exc)}
+        return {"cameras": [], "detected": [], "error": str(exc)}
 
-    options = [{"index": index, "label": f"Camera {index}", "source": str(index)} for index in range(8)]
-    known = {camera["index"] for camera in found}
-    merged = found + [option for option in options if option["index"] not in known]
-    return {"cameras": merged, "detected": found}
+    return {"cameras": found, "detected": found}
 
 
 @app.post("/api/camera")

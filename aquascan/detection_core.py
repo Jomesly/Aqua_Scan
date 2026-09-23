@@ -110,7 +110,27 @@ def parse_camera_source(source):
     return text
 
 
+def enumerate_camera_names():
+    names = {}
+    try:
+        from pygrabber.dshow_graph import FilterGraph
+
+        for index, name in enumerate(FilterGraph().get_input_devices()):
+            label = str(name).strip() or f"Camera {index}"
+            names[index] = label
+    except Exception:
+        pass
+    return names
+
+
 def list_cameras():
+    names = enumerate_camera_names()
+    if names:
+        return [
+            {"index": index, "label": name, "source": str(index)}
+            for index, name in names.items()
+        ]
+
     found = []
     for index in range(8):
         cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
