@@ -6,7 +6,9 @@ from ultralytics import YOLO
 from model_config import (
     CAMERA_INDICES,
     CALIBRATION_PRESETS,
+    CLASS_CALIBRATION,
     CONFIDENCE_THRESHOLD,
+    DEFAULT_CLASS_RULE,
     DETECT_IMGSZ,
     DETECTION_CLASS_IDS,
     MAX_BOX_AREA_RATIO,
@@ -163,20 +165,56 @@ def list_cameras():
     return found
 
 
+def class_rule(class_name):
+    return CLASS_CALIBRATION.get(class_name, DEFAULT_CLASS_RULE)
+
+
+def class_confidence(class_name, calibration):
+    rule = class_rule(class_name)
+    conf = calibration.confidence * rule.get("conf_scale", 1.0)
+    return min(max(conf, rule.get("min_conf", 0.15)), rule.get("max_conf", 0.99))
+
+
+def inference_confidence(calibration):
+    """Lowest per-class conf so YOLO returns candidates for every class."""
+    confs = [class_confidence(name, calibration) for name in CLASS_CALIBRATION]
+    confs.append(calibration.confidence)
+    return min(confs)
+
+
 def filter_result(result, frame_shape, calibration):
     frame_area = frame_shape[0] * frame_shape[1]
     keep = []
 
     for index, box in enumerate(result.boxes):
+        class_id = int(box.cls[0])
+        class_name = result.names.get(class_id, str(class_id))
+        conf = float(box.conf[0])
+
+        if class_name not in CLASS_CALIBRATION:
+            continue
+
+        rule = class_rule(class_name)
+
+        if conf < class_confidence(class_name, calibration):
+            continue
+
         x1, y1, x2, y2 = box.xyxy[0].tolist()
         width = max(x2 - x1, 1)
         height = max(y2 - y1, 1)
         area_ratio = (width * height) / frame_area
         aspect_ratio = width / height
 
-        if area_ratio < calibration.min_box_area_ratio:
+        min_area = rule.get("min_box_area_ratio")
+        if min_area is None:
+            min_area = calibration.min_box_area_ratio
+        max_area = rule.get("max_box_area_ratio")
+        if max_area is None:
+            max_area = calibration.max_box_area_ratio
+
+        if area_ratio < min_area:
             continue
-        if area_ratio > calibration.max_box_area_ratio:
+        if area_ratio > max_area:
             continue
         if aspect_ratio < calibration.min_box_aspect_ratio:
             continue
@@ -266,7 +304,7 @@ def detect_fish(
     results = model(
         frame,
         verbose=False,
-        conf=calibration.confidence,
+        conf=inference_confidence(calibration),
         classes=DETECTION_CLASS_IDS,
         imgsz=DETECT_IMGSZ,
     )
@@ -304,13 +342,18 @@ def result_metrics(result):
 def annotate_frame(frame, result, calibration):
     annotated = result.plot()
     metrics = result_metrics(result)
+    parts = [f"Detections: {metrics['count']}"]
+    for name in sorted(metrics.get("class_counts", {})):
+        parts.append(f"{name} {metrics['class_counts'][name]}")
+    parts.append(f"base conf >= {calibration.confidence:.2f}")
     cv2.putText(
         annotated,
-        f"Detections: {metrics['count']} | conf >= {calibration.confidence:.2f}",
+        " | ".join(parts),
         (10, 30),
         cv2.FONT_HERSHEY_SIMPLEX,
-        0.85,
+        0.7,
         (0, 200, 255),
         2,
+        cv2.LINE_AA,
     )
     return annotated, metrics

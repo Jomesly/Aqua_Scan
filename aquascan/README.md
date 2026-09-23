@@ -27,7 +27,7 @@ Test the active model:
 - `live_dashboard.py` - browser dashboard with webcam stream, camera source settings, and calibration controls
 - `detection_core.py` - shared model loading, camera startup, filtering, and metrics
 - `model_config.py` - active model path and calibration presets
-- `../weights/best.pt` - active trained model (Tilapia / pellets / waste)
+- `../weights/best.pt` - active trained model; live detection is pellets-only (`DETECTION_CLASS_IDS = [1]`)
 
 ## Camera settings
 

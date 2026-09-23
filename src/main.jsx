@@ -889,7 +889,7 @@ function DetectionReliabilityPanel() {
         })}
       </div>
         <div className="mt-4 rounded-2xl border border-sky-300/20 bg-sky-300/[0.07] p-4 text-sm leading-6 text-sky-100">
-          Recommended fixes: train on feeding-zone videos, include empty-water negatives, keep the active classes as Tilapia / pellets / waste, hold low-confidence frames instead of feeding them into R, and maintain a confidence threshold around 0.50-0.65 for demos.
+          Recommended fixes: train on feeding-zone videos, include empty-water negatives, run live detection on pellets only, hold low-confidence frames instead of feeding them into R, and maintain a confidence threshold around 0.50-0.65 for demos.
         </div>
     </div>
   );

@@ -378,7 +378,7 @@ def dashboard():
     <header>
       <div>
         <h1>Tilapiers Live</h1>
-        <div class="subtitle">Tilapia, pellets, and waste detection with live calibration controls</div>
+        <div class="subtitle">Feed-pellet detection with live calibration controls</div>
       </div>
       <div class="panel insight">Model: <span id="modelName" class="ok">loading</span><br/>Classes: <span id="modelClasses">loading</span><br/>Press Ctrl+C in the terminal to stop the server.</div>
     </header>
@@ -463,7 +463,7 @@ def dashboard():
           <button id="apply">Apply calibration</button>
         </div>
         <div class="card insight">
-          Start with Balanced. Active model is weights/best.pt (Tilapia, pellets, waste). Keep people out of frame to reduce false positives from skin/clothes.
+          Start with Balanced. Live detection uses pellets only from weights/best.pt (model still has Tilapia/waste classes). Keep people out of frame to reduce false positives from skin/clothes.
         </div>
       </aside>
     </section>
