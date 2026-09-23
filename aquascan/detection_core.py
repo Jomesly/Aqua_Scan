@@ -64,9 +64,19 @@ def load_person_model():
     return YOLO(str(PERSON_MODEL_PATH))
 
 
-def open_camera():
-    for index in CAMERA_INDICES:
-        cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
+def open_camera(index=None):
+    indices = [index] if index is not None else list(CAMERA_INDICES)
+
+    for device_index in indices:
+        if isinstance(device_index, str) and device_index.startswith(("http://", "https://", "rtsp://")):
+            cap = cv2.VideoCapture(device_index)
+            if cap.isOpened() and cap.read()[0]:
+                print(f"Using stream {device_index}")
+                return cap
+            cap.release()
+            continue
+
+        cap = cv2.VideoCapture(int(device_index), cv2.CAP_DSHOW)
         if not cap.isOpened():
             cap.release()
             continue
@@ -77,12 +87,43 @@ def open_camera():
         for _ in range(10):
             ret, frame = cap.read()
             if ret and frame is not None:
-                print(f"Using webcam index {index}")
+                print(f"Using webcam index {device_index}")
                 return cap
 
         cap.release()
 
     return None
+
+
+def parse_camera_source(source):
+    if source is None or source == "" or source == "auto":
+        return None
+
+    if isinstance(source, int):
+        return source
+
+    text = str(source).strip()
+    if text.lower() == "auto":
+        return None
+    if text.isdigit():
+        return int(text)
+    return text
+
+
+def list_cameras():
+    found = []
+    for index in range(8):
+        cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
+        if not cap.isOpened():
+            cap.release()
+            continue
+
+        ret, frame = cap.read()
+        cap.release()
+        if ret and frame is not None:
+            found.append({"index": index, "label": f"Camera {index}", "source": str(index)})
+
+    return found
 
 
 def filter_result(result, frame_shape, calibration):

@@ -7,7 +7,6 @@ import {
   Camera,
   CheckCircle2,
   Clock3,
-  Database,
   Eye,
   Fish,
   History,
@@ -17,7 +16,6 @@ import {
   ShieldAlert,
   Smartphone,
   Waves,
-  Wifi,
   Zap,
 } from 'lucide-react';
 import './styles.css';
@@ -29,11 +27,11 @@ const alerts = [
     shortTime: '09:42',
     species: 'Tilapia',
     confidence: 94,
-    severity: 'Critical',
-    count: 3,
+    severity: 'Unsafe',
+    count: 0,
     camera: 'Feeding Zone - Camera 01',
-    condition: 'environment unsafe - feeding withheld',
-    note: 'Dissolved oxygen below 3 mg/L. SMS alert sent to caretaker.',
+    condition: 'Unsafe gate - feeding withheld',
+    note: 'DO 2.6 mg/L below 3 mg/L. SMS sent to caretaker registered number (thesis Table 1).',
   },
   {
     id: 'TL-2406-018',
@@ -44,8 +42,8 @@ const alerts = [
     severity: 'Warning',
     count: 6,
     camera: 'Feeding Zone - Camera 03',
-    condition: 'low depletion - uneaten feed remaining',
-    note: 'Pellet depletion below 0.40. Session stopped and remaining pellets logged.',
+    condition: 'Low depletion - session stopped',
+    note: 'R < 0.40. Remaining pellets logged as uneaten-feed alert.',
   },
   {
     id: 'TL-2406-017',
@@ -56,8 +54,8 @@ const alerts = [
     severity: 'Normal',
     count: 4,
     camera: 'Feeding Zone - Camera 02',
-    condition: 'high depletion - continue full increment',
-    note: 'Depletion rate at or above 0.80. Next full increment dispensed.',
+    condition: 'High depletion - full increment',
+    note: 'R ≥ 0.80. Next full increment (0.25 × D_ref) dispensed by actuator.',
   },
   {
     id: 'TL-2406-016',
@@ -68,30 +66,62 @@ const alerts = [
     severity: 'Normal',
     count: 5,
     camera: 'Feeding Zone - Camera 04',
-    condition: 'environment safe - feeding recommended',
-    note: 'Temperature and dissolved oxygen within Safe bands.',
+    condition: 'Safe gate - feeding recommended',
+    note: 'Temperature 27.4°C and DO 4.8 mg/L both inside Safe bands (Table 1).',
   },
 ];
 
 const cameraTiles = [
-  { name: 'Feeding Zone - Cam 01', species: 'Pellets', confidence: 94, fish: 12, condition: 'high depletion', accent: 'from-sky-500/30' },
-  { name: 'Feeding Zone - Cam 03', species: 'Pellets', confidence: 88, fish: 6, condition: 'moderate depletion', accent: 'from-cyan-500/25' },
-  { name: 'Feeding Zone - Cam 02', species: 'Pellets', confidence: 91, fish: 4, condition: 'low depletion', accent: 'from-emerald-500/25' },
-  { name: 'Feeding Zone - Cam 04', species: 'Tilapia', confidence: 82, fish: 2, condition: 'environment safe', accent: 'from-indigo-500/25' },
+  { name: 'Feeding Zone - Cam 01', species: 'Pellets', confidence: 94, fish: 12, condition: 'R high - continue', accent: 'from-sky-500/30' },
+  { name: 'Feeding Zone - Cam 03', species: 'Pellets', confidence: 88, fish: 6, condition: 'R moderate - half dose', accent: 'from-cyan-500/25' },
+  { name: 'Feeding Zone - Cam 02', species: 'Pellets', confidence: 91, fish: 4, condition: 'R low - uneaten feed', accent: 'from-emerald-500/25' },
+  { name: 'Feeding Zone - Cam 04', species: 'Tilapia', confidence: 82, fish: 2, condition: 'gate Safe', accent: 'from-indigo-500/25' },
 ];
 
 const waterSensors = [
-  { name: 'Temperature', value: '27.4', unit: 'C', status: 'Normal', trend: 'steady' },
-  { name: 'Dissolved Oxygen', value: '4.8', unit: 'mg/L', status: 'Normal', trend: 'stable' },
-  { name: 'pH Level', value: '7.2', unit: '', status: 'Normal', trend: 'stable' },
-  { name: 'Turbidity', value: '3.8', unit: 'NTU', status: 'Normal', trend: 'clear' },
+  {
+    name: 'Water Temperature',
+    value: '27.4',
+    unit: '°C',
+    status: 'Safe',
+    trend: 'Gate: 25°C ≤ T ≤ 31°C',
+    note: 'thesis Table 1',
+  },
+  {
+    name: 'Dissolved Oxygen',
+    value: '4.8',
+    unit: 'mg/L',
+    status: 'Safe',
+    trend: 'Gate: 3 ≤ DO ≤ 5 mg/L',
+    note: 'checked first (BFAR-NCR)',
+  },
+];
+
+const gateThresholds = {
+  temp: { min: 25, max: 31, unit: '°C' },
+  oxygen: { min: 3, max: 5, unit: 'mg/L' },
+};
+
+const feedingSession = {
+  dRef: '100%',
+  increment: '0.25 × D_ref',
+  observationWindow: '5 min',
+  dispensed: '37.5%',
+  ceiling: 'session cap = D_ref',
+  state: 'Safe - feeding permitted',
+};
+
+const depletionTiers = [
+  { rate: 'R ≥ 0.80', label: 'High depletion', action: 'Continue full increment', tone: 'high' },
+  { rate: '0.40 ≤ R < 0.80', label: 'Moderate depletion', action: 'Reduce: half increment', tone: 'mod' },
+  { rate: 'R < 0.40', label: 'Low depletion', action: 'Stop + uneaten-feed alert', tone: 'low' },
 ];
 
 const detectionChecks = [
-  { label: 'Camera clarity', value: 'Good', detail: 'Feeding-zone ROI clear, no glare', status: 'pass' },
-  { label: 'Lighting level', value: 'Needs review', detail: 'Low light can reduce pellet confidence', status: 'warn' },
-  { label: 'Water turbidity', value: '3.8 NTU', detail: 'Acceptable for YOLOv8 pellet analysis', status: 'pass' },
-  { label: 'Model confidence', value: '82-94%', detail: 'Below 80% should be treated as uncertain', status: 'warn' },
+  { label: 'Environmental gate', value: 'Safe', detail: 'Temp and DO both inside Table 1 bands', status: 'pass' },
+  { label: 'Feeding-zone ROI', value: 'Clear', detail: 'Fixed camera, feeding-zone region only', status: 'pass' },
+  { label: 'Pellet depletion (R)', value: '0.64', detail: 'Moderate → next half increment', status: 'warn' },
+  { label: 'Model confidence', value: '82-94%', detail: 'Low-confidence reads held (fail-safe)', status: 'warn' },
 ];
 
 const historyRecords = [
@@ -99,97 +129,101 @@ const historyRecords = [
     id: 'HIS-2406-033',
     time: '2026-06-14 07:28:42',
     species: 'Pellets',
-    condition: 'environment unsafe - feeding withheld',
+    condition: 'Unsafe gate - feeding withheld + SMS',
     confidence: 95,
     camera: 'Feeding Zone - Cam 01',
-    severity: 'Critical',
-    water: { temp: '32.1 C', ph: '7.0', oxygen: '2.6 mg/L' },
+    severity: 'Unsafe',
+    water: { temp: '32.1 °C', ph: '7.0', oxygen: '2.6 mg/L' },
   },
   {
     id: 'HIS-2406-032',
     time: '2026-06-14 03:12:09',
     species: 'Pellets',
-    condition: 'low depletion - session stopped',
+    condition: 'Low depletion - uneaten-feed log',
     confidence: 89,
     camera: 'Feeding Zone - Cam 03',
     severity: 'Warning',
-    water: { temp: '27.8 C', ph: '7.4', oxygen: '5.0 mg/L' },
+    water: { temp: '27.8 °C', ph: '7.4', oxygen: '5.0 mg/L' },
   },
   {
     id: 'HIS-2406-031',
     time: '2026-06-13 22:44:51',
     species: 'Pellets',
-    condition: 'high depletion - full increment',
+    condition: 'High depletion - full increment',
     confidence: 92,
     camera: 'Feeding Zone - Cam 02',
     severity: 'Normal',
-    water: { temp: '26.9 C', ph: '7.3', oxygen: '6.2 mg/L' },
+    water: { temp: '26.9 °C', ph: '7.3', oxygen: '6.2 mg/L' },
   },
   {
     id: 'HIS-2406-030',
     time: '2026-06-13 15:36:18',
     species: 'Pellets',
-    condition: 'moderate depletion - half increment',
+    condition: 'Moderate depletion - half increment',
     confidence: 87,
     camera: 'Feeding Zone - Cam 04',
     severity: 'Warning',
-    water: { temp: '29.0 C', ph: '7.1', oxygen: '4.2 mg/L' },
+    water: { temp: '29.0 °C', ph: '7.1', oxygen: '4.2 mg/L' },
   },
   {
     id: 'HIS-2406-029',
     time: '2026-06-13 08:05:27',
     species: 'Tilapia',
-    condition: 'environment safe - feeding recommended',
+    condition: 'Safe gate - session started',
     confidence: 91,
     camera: 'Feeding Zone - Cam 01',
     severity: 'Normal',
-    water: { temp: '27.2 C', ph: '7.5', oxygen: '5.5 mg/L' },
+    water: { temp: '27.2 °C', ph: '7.5', oxygen: '5.5 mg/L' },
   },
   {
     id: 'HIS-2406-028',
     time: '2026-06-12 18:49:03',
     species: 'Waste',
-    condition: 'uneaten feed flagged in ROI',
+    condition: 'Uneaten feed flagged in ROI',
     confidence: 93,
     camera: 'Feeding Zone - Cam 02',
     severity: 'Warning',
-    water: { temp: '28.6 C', ph: '6.8', oxygen: '4.8 mg/L' },
+    water: { temp: '28.6 °C', ph: '6.8', oxygen: '4.8 mg/L' },
   },
 ];
 
 const timeline = [22, 18, 15, 14, 17, 26, 42, 58, 64, 73, 68, 71, 79, 86, 82, 91, 96, 88, 76, 62, 54, 47, 39, 31];
 
 const correlationData = [
-  { hour: '00:00', detections: 18, oxygen: 7.1 },
-  { hour: '01:00', detections: 16, oxygen: 7.0 },
-  { hour: '02:00', detections: 14, oxygen: 6.9 },
-  { hour: '03:00', detections: 17, oxygen: 6.8 },
-  { hour: '04:00', detections: 21, oxygen: 6.7 },
-  { hour: '05:00', detections: 24, oxygen: 6.5 },
-  { hour: '06:00', detections: 28, oxygen: 6.2 },
-  { hour: '07:00', detections: 34, oxygen: 5.8 },
-  { hour: '08:00', detections: 45, oxygen: 5.2 },
-  { hour: '09:00', detections: 72, oxygen: 4.8 },
-  { hour: '10:00', detections: 68, oxygen: 5.0 },
-  { hour: '11:00', detections: 54, oxygen: 5.3 },
+  { hour: '00:00', detections: 18, oxygen: 4.9 },
+  { hour: '01:00', detections: 16, oxygen: 4.8 },
+  { hour: '02:00', detections: 14, oxygen: 4.7 },
+  { hour: '03:00', detections: 17, oxygen: 4.6 },
+  { hour: '04:00', detections: 21, oxygen: 4.5 },
+  { hour: '05:00', detections: 24, oxygen: 4.3 },
+  { hour: '06:00', detections: 28, oxygen: 4.0 },
+  { hour: '07:00', detections: 34, oxygen: 3.7 },
+  { hour: '08:00', detections: 45, oxygen: 3.4 },
+  { hour: '09:00', detections: 72, oxygen: 2.8 },
+  { hour: '10:00', detections: 68, oxygen: 3.2 },
+  { hour: '11:00', detections: 54, oxygen: 3.6 },
 ];
 
 function severityClass(severity) {
-  if (severity === 'Critical') return 'bg-red-500/15 text-red-300 ring-red-400/40';
+  if (severity === 'Critical' || severity === 'Unsafe') return 'bg-red-500/15 text-red-300 ring-red-400/40';
   if (severity === 'Warning') return 'bg-amber-400/15 text-amber-200 ring-amber-300/40';
   return 'bg-emerald-400/15 text-emerald-200 ring-emerald-300/40';
 }
 
 function mobileSeverityClass(severity) {
-  if (severity === 'Critical') return 'bg-red-100 text-red-700';
+  if (severity === 'Critical' || severity === 'Unsafe') return 'bg-red-100 text-red-700';
   if (severity === 'Warning') return 'bg-amber-100 text-amber-700';
   return 'bg-emerald-100 text-emerald-700';
 }
 
 function dashboardSensorBadgeClass(status) {
-  if (status === 'Critical') return 'bg-red-500/15 text-red-200 ring-red-400/40';
+  if (status === 'Unsafe' || status === 'Critical') return 'bg-red-500/15 text-red-200 ring-red-400/40';
   if (status === 'Warning') return 'bg-amber-400/15 text-amber-200 ring-amber-300/40';
   return 'bg-emerald-400/15 text-emerald-200 ring-emerald-300/40';
+}
+
+function openLiveDashboard() {
+  window.open('http://127.0.0.1:8000/', '_blank', 'noopener,noreferrer');
 }
 
 function AquaLogo({ compact = false }) {
@@ -253,8 +287,8 @@ function MobileHome({ activeScreen = 'Home', onScreenChange }) {
           </div>
         </div>
         <div className="mt-4 grid grid-cols-2 gap-3">
-          <InfoPill icon={<Radio />} label="FastAPI socket" value="38 ms latency" />
-          <InfoPill icon={<Database />} label="PostgreSQL" value="Saved event" />
+          <InfoPill icon={<Activity />} label="Env gate" value="Safe - Temp + DO" />
+          <InfoPill icon={<Radio />} label="Live stream" value="MJPEG /stream" />
         </div>
         <MobileSensorStrip />
       </div>
@@ -354,7 +388,6 @@ function MobileHistory({ activeScreen = 'History', onScreenChange }) {
             </div>
             <div className="mt-3 flex flex-wrap gap-2">
               <WaterChip label="Temp" value={record.water.temp} />
-              <WaterChip label="pH" value={record.water.ph} />
               <WaterChip label="DO" value={record.water.oxygen} />
             </div>
           </article>
@@ -419,7 +452,7 @@ function MobileDetail({ onScreenChange }) {
               <div className="text-xs text-slate-500">{alert.id}</div>
               <div className="text-xl font-bold">{alert.species} alert</div>
             </div>
-            <span className="rounded-full bg-red-100 px-3 py-1 text-xs font-bold text-red-700">Critical</span>
+            <span className={`rounded-full bg-red-100 px-3 py-1 text-xs font-bold text-red-700`}>{alert.severity}</span>
           </div>
           <div className="mt-4 grid grid-cols-3 gap-2 text-center">
             <Metric label="Fish count" value={alert.count} />
@@ -485,30 +518,46 @@ function Dashboard() {
         <AquaLogo />
         <div className="flex items-center gap-3">
           <div className="rounded-full border border-emerald-400/30 bg-emerald-400/10 px-4 py-2 text-sm font-semibold text-emerald-200">
-            <span className="mr-2 inline-block size-2 rounded-full bg-emerald-400 shadow-[0_0_14px_#22c55e]" /> Live monitoring - Online
+            <span className="mr-2 inline-block size-2 rounded-full bg-emerald-400 shadow-[0_0_14px_#22c55e]" /> Gate Safe - feeding permitted
           </div>
-          <div className="rounded-full border border-white/10 px-4 py-2 text-sm text-slate-300">YOLOv8n active</div>
+          <button
+            type="button"
+            onClick={openLiveDashboard}
+            className="inline-flex items-center gap-2 rounded-full border border-cyan-300/40 bg-cyan-400/15 px-4 py-2 text-sm font-bold text-cyan-100 transition hover:bg-cyan-400/25 hover:text-white"
+            title="Open live camera dashboard with YOLOv8 stream"
+          >
+            <Camera className="size-4" />
+            Open Live Camera
+          </button>
         </div>
       </header>
 
       <div className="mt-6 grid grid-cols-4 gap-4">
-        <StatCard icon={<Fish />} label="Pellet detections today" value="1,284" trend="Feeding-zone ROI counts" />
-        <StatCard icon={<AlertTriangle />} label="Active alerts" value="7" trend="2 need review" warn />
-        <StatCard icon={<Camera />} label="Camera feeds online" value="4 / 4" trend="All ponds connected" />
-        <StatCard icon={<Clock3 />} label="System uptime" value="99.92%" trend="18 days stable" />
+        <StatCard icon={<Fish />} label="Pellet detections today" value="1,284" trend="Feeding-zone ROI only" />
+        <StatCard icon={<AlertTriangle />} label="Unsafe / SMS alerts" value="7" trend="2 need review" warn />
+        <StatCard icon={<Camera />} label="Camera feeds online" value="4 / 4" trend="Feeding-zone cameras" />
+        <StatCard icon={<Clock3 />} label="Observation window" value="5 min" trend="Per increment (thesis)" />
       </div>
 
       <DashboardSensorRow />
+      <EnvironmentGatePanel />
+      <DepletionDecisionPanel />
 
       <div className="mt-6 grid grid-cols-[1fr_320px] gap-5">
         <main className="space-y-5">
           <div className="rounded-3xl border border-white/10 bg-slate-950/45 p-4">
             <div className="mb-4 flex items-center justify-between">
               <div>
-                <h3 className="text-lg font-semibold text-white">Simulated live feed grid</h3>
-                <p className="text-sm text-slate-400">FastAPI + WebSocket stream, PostgreSQL event logging</p>
+                <h3 className="text-lg font-semibold text-white">Feeding-zone live grid (simulated)</h3>
+                <p className="text-sm text-slate-400">YOLOv8 pellet counts in ROI - real camera opens via Live Camera button</p>
               </div>
-              <div className="flex items-center gap-2 text-sm text-cyan-200"><Wifi className="size-4" /> 38 ms avg latency</div>
+              <button
+                type="button"
+                onClick={openLiveDashboard}
+                className="inline-flex items-center gap-2 rounded-full border border-cyan-300/30 bg-cyan-300/10 px-3 py-1.5 text-xs font-bold text-cyan-100 hover:bg-cyan-300/20"
+              >
+                <Camera className="size-3.5" /> Stream
+              </button>
             </div>
             <div className="grid grid-cols-2 gap-4">
               {cameraTiles.map((tile) => (
@@ -523,8 +572,8 @@ function Dashboard() {
         <aside className="rounded-3xl border border-white/10 bg-slate-950/60 p-4">
           <div className="mb-4 flex items-center justify-between">
             <div>
-              <h3 className="text-lg font-semibold text-white">Real-time alert feed</h3>
-              <p className="text-sm text-slate-400">Newest detections first</p>
+              <h3 className="text-lg font-semibold text-white">SMS / feeding alerts</h3>
+              <p className="text-sm text-slate-400">Unsafe gate + uneaten-feed events</p>
             </div>
             <Bell className="size-5 text-cyan-300" />
           </div>
@@ -537,6 +586,7 @@ function Dashboard() {
                 </div>
                 <div className="mt-2 text-sm text-slate-300">{alert.species} - {alert.confidence}% confidence</div>
                 <div className="mt-1 text-xs text-slate-500">{alert.camera}</div>
+                <div className="mt-1 text-xs leading-4 text-slate-500">{alert.condition}</div>
               </article>
             ))}
           </div>
@@ -546,9 +596,121 @@ function Dashboard() {
   );
 }
 
+function EnvironmentGatePanel() {
+  const safe = waterSensors.every((sensor) => sensor.status === 'Safe');
+
+  return (
+    <div className={`mt-6 rounded-3xl border p-4 ${safe ? 'border-emerald-300/25 bg-emerald-300/[0.06]' : 'border-red-300/30 bg-red-300/[0.08]'}`}>
+      <div className="mb-4 flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <h3 className="text-lg font-semibold text-white">Environmental verification gate (Table 1)</h3>
+          <p className="text-sm text-slate-400">
+            Binary Safe/Unsafe - both temperature and dissolved oxygen must pass. pH / turbidity / ammonia are outside feeding-gate scope (thesis delimitations).
+          </p>
+        </div>
+        <span className={`rounded-full px-4 py-2 text-sm font-bold ring-1 ${safe ? 'bg-emerald-400/15 text-emerald-200 ring-emerald-300/40' : 'bg-red-500/15 text-red-200 ring-red-400/40'}`}>
+          {safe ? 'Safe - incremental feeding' : 'Unsafe - withhold + SMS'}
+        </span>
+      </div>
+      <div className="grid grid-cols-3 gap-3">
+        <GateCard
+          label="Temperature"
+          value="27.4 °C"
+          band={`${gateThresholds.temp.min}–${gateThresholds.temp.max} °C`}
+          pass
+        />
+        <GateCard
+          label="Dissolved oxygen"
+          value="4.8 mg/L"
+          band={`${gateThresholds.oxygen.min}–${gateThresholds.oxygen.max} mg/L`}
+          pass
+        />
+        <GateCard
+          label="Gate decision"
+          value="Safe"
+          band="Both parameters in band"
+          pass
+        />
+      </div>
+      <div className="mt-4 grid grid-cols-2 gap-3 text-xs leading-5 text-slate-300">
+        <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-3">
+          <span className="font-bold text-emerald-200">Safe:</span> 25 °C ≤ T ≤ 31 °C and 3 ≤ DO ≤ 5 mg/L → feeding recommended; increments gated by depletion.
+        </div>
+        <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-3">
+          <span className="font-bold text-red-200">Unsafe:</span> T &lt; 25 or T &gt; 31, or DO &lt; 3 mg/L → withhold feed; SMS to caretaker mobile.
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function GateCard({ label, value, band, pass }) {
+  return (
+    <article className={`rounded-2xl border p-3 ${pass ? 'border-emerald-300/20 bg-emerald-300/[0.05]' : 'border-red-300/30 bg-red-300/[0.07]'}`}>
+      <div className="text-xs text-slate-400">{label}</div>
+      <div className={`mt-1 text-2xl font-bold ${pass ? 'text-emerald-100' : 'text-red-100'}`}>{value}</div>
+      <div className="mt-2 text-[11px] text-slate-500">{band}</div>
+    </article>
+  );
+}
+
+function DepletionDecisionPanel() {
+  const toneClass = {
+    high: 'border-emerald-300/25 bg-emerald-300/[0.06]',
+    mod: 'border-amber-300/25 bg-amber-300/[0.08]',
+    low: 'border-red-300/30 bg-red-300/[0.08]',
+  };
+
+  return (
+    <div className="mt-6 rounded-3xl border border-white/10 bg-slate-950/45 p-4">
+      <div className="mb-4 flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <h3 className="text-lg font-semibold text-white">Depletion-responsive feeding session</h3>
+          <p className="text-sm text-slate-400">R = (P0 − Pt) / P0 over the 5-minute observation window after each increment</p>
+        </div>
+        <div className="rounded-full border border-sky-300/25 bg-sky-300/10 px-3 py-1.5 text-xs font-bold text-sky-100">
+          {feedingSession.state}
+        </div>
+      </div>
+
+      <div className="mb-4 grid grid-cols-5 gap-3">
+        <SessionStat label="Reference dose D_ref" value={feedingSession.dRef} detail="Calibrated at stocking" />
+        <SessionStat label="Increment size" value={feedingSession.increment} detail="Fixed step" />
+        <SessionStat label="Observation window" value={feedingSession.observationWindow} detail="Post-dispense" />
+        <SessionStat label="Session progress" value={feedingSession.dispensed} detail={feedingSession.ceiling} />
+        <SessionStat label="Current R" value="0.64" detail="Moderate - half next" warn />
+      </div>
+
+      <div className="grid grid-cols-3 gap-3">
+        {depletionTiers.map((tier) => (
+          <article key={tier.label} className={`rounded-2xl border p-3 ${toneClass[tier.tone]}`}>
+            <div className="text-xs font-semibold text-slate-400">{tier.rate}</div>
+            <div className="mt-1 text-base font-bold text-white">{tier.label}</div>
+            <div className="mt-2 text-sm text-slate-300">{tier.action}</div>
+          </article>
+        ))}
+      </div>
+
+      <div className="mt-4 rounded-2xl border border-sky-300/20 bg-sky-300/[0.07] p-3 text-sm leading-6 text-sky-100">
+        Actuator dispenses automatically after each decision. Session hard-stops at D_ref. Low-confidence detections are held (not fed into R); uneaten pellets after Low depletion are logged as a water-quality risk.
+      </div>
+    </div>
+  );
+}
+
+function SessionStat({ label, value, detail, warn = false }) {
+  return (
+    <article className={`rounded-2xl border p-3 ${warn ? 'border-amber-300/30 bg-amber-300/[0.08]' : 'border-white/10 bg-white/[0.04]'}`}>
+      <div className="text-[11px] text-slate-400">{label}</div>
+      <div className={`mt-1 text-lg font-bold ${warn ? 'text-amber-100' : 'text-white'}`}>{value}</div>
+      <div className="mt-1 text-[11px] text-slate-500">{detail}</div>
+    </article>
+  );
+}
+
 function DashboardSensorRow() {
   return (
-    <div className="mt-6 grid grid-cols-4 gap-4">
+    <div className="mt-6 grid grid-cols-2 gap-4">
       {waterSensors.map((sensor) => {
         const isWarning = sensor.status === 'Warning';
 
@@ -618,8 +780,8 @@ function TimelineChart() {
 
 function CorrelationPanel() {
   const maxDetections = Math.max(...correlationData.map((point) => point.detections));
-  const minOxygen = 4.8;
-  const maxOxygen = 7.2;
+  const minOxygen = 2.8;
+  const maxOxygen = 5.0;
   const chartWidth = 660;
   const chartHeight = 220;
   const paddingX = 34;
@@ -726,9 +888,9 @@ function DetectionReliabilityPanel() {
           );
         })}
       </div>
-      <div className="mt-4 rounded-2xl border border-sky-300/20 bg-sky-300/[0.07] p-4 text-sm leading-6 text-sky-100">
-        Recommended fixes: train with feeding-zone videos, include negative samples with empty water, keep pellets as the single class, maintain confidence threshold around 0.50-0.65 for demos, and log low-confidence frames for dataset improvement.
-      </div>
+        <div className="mt-4 rounded-2xl border border-sky-300/20 bg-sky-300/[0.07] p-4 text-sm leading-6 text-sky-100">
+          Recommended fixes: train on feeding-zone videos, include empty-water negatives, keep the active classes as Tilapia / pellets / waste, hold low-confidence frames instead of feeding them into R, and maintain a confidence threshold around 0.50-0.65 for demos.
+        </div>
     </div>
   );
 }

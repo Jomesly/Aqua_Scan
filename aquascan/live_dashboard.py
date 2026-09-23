@@ -2,12 +2,22 @@ import threading
 import time
 
 import cv2
+import numpy as np
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 
-from detection_core import Calibration, annotate_frame, detect_fish, load_model, load_person_model, open_camera
-from model_config import MODEL_PATH
+from detection_core import (
+    Calibration,
+    annotate_frame,
+    detect_fish,
+    list_cameras,
+    load_model,
+    load_person_model,
+    open_camera,
+    parse_camera_source,
+)
+from model_config import CAMERA_INDICES, MODEL_PATH
 
 app = FastAPI(title="Tilapiers Live Dashboard")
 
@@ -15,6 +25,9 @@ model = load_model()
 person_model = load_person_model()
 calibration = Calibration()
 state_lock = threading.Lock()
+camera_source = "auto"
+camera_enabled = True
+last_source_before_off = "auto"
 latest_metrics = {
     "count": 0,
     "max_confidence": 0.0,
@@ -22,7 +35,17 @@ latest_metrics = {
     "class_counts": {},
     "suppressed_people": 0,
     "status": "waiting for stream",
+    "camera": "auto",
+    "camera_label": "Auto",
+    "camera_enabled": True,
     "updated_at": None,
+}
+ZERO_METRICS = {
+    "count": 0,
+    "max_confidence": 0.0,
+    "avg_confidence": 0.0,
+    "class_counts": {},
+    "suppressed_people": 0,
 }
 
 
@@ -33,25 +56,182 @@ class CalibrationUpdate(BaseModel):
     preset: str | None = None
 
 
+class CameraUpdate(BaseModel):
+    source: str = "auto"
+
+
+class CameraPowerUpdate(BaseModel):
+    enabled: bool = True
+
+
 def update_metrics(metrics, status="streaming"):
     with state_lock:
         latest_metrics.update(metrics)
         latest_metrics["status"] = status
+        latest_metrics["camera"] = camera_source
+        latest_metrics["camera_label"] = camera_label(camera_source, camera_enabled)
+        latest_metrics["camera_enabled"] = camera_enabled
         latest_metrics["updated_at"] = time.strftime("%H:%M:%S")
 
 
+def camera_label(source, enabled=True):
+    if not enabled:
+        return "Off"
+    if source in (None, "", "auto"):
+        return "Auto"
+    if str(source).isdigit():
+        return f"Camera {source}"
+    return str(source)
+
+
+def get_camera_state():
+    with state_lock:
+        return camera_source, camera_enabled
+
+
+def set_camera_source(source: str) -> str:
+    global camera_source, last_source_before_off
+    normalized = source.strip() if source else "auto"
+    if not normalized:
+        normalized = "auto"
+    if normalized.lower() in {"auto", "off", "stop"}:
+        normalized = "auto" if normalized.lower() == "auto" else normalized.lower()
+    elif normalized.isdigit():
+        index = int(normalized)
+        if index not in CAMERA_INDICES and index > 7:
+            raise ValueError(f"Unsupported camera index: {index}")
+        normalized = str(index)
+
+    with state_lock:
+        camera_source = normalized
+        if camera_enabled:
+            last_source_before_off = normalized
+        latest_metrics["camera"] = normalized
+        latest_metrics["camera_label"] = camera_label(normalized, camera_enabled)
+        latest_metrics["status"] = (
+            f"switching to {camera_label(normalized, camera_enabled)}"
+            if camera_enabled
+            else "camera off"
+        )
+        latest_metrics["updated_at"] = time.strftime("%H:%M:%S")
+    return normalized
+
+
+def set_camera_enabled(enabled: bool) -> bool:
+    global camera_enabled, camera_source, last_source_before_off
+    with state_lock:
+        camera_enabled = bool(enabled)
+        if camera_enabled:
+            camera_source = last_source_before_off or "auto"
+            status = f"switching to {camera_label(camera_source, True)}"
+            label = camera_label(camera_source, True)
+        else:
+            if camera_source not in {"off", "stop"}:
+                last_source_before_off = camera_source
+            status = "camera off"
+            label = "Off"
+
+        latest_metrics.update(dict(ZERO_METRICS))
+        latest_metrics["camera"] = camera_source
+        latest_metrics["camera_label"] = label
+        latest_metrics["camera_enabled"] = camera_enabled
+        latest_metrics["status"] = status
+        latest_metrics["updated_at"] = time.strftime("%H:%M:%S")
+        return camera_enabled
+
+
+def jpeg_frame(frame):
+    ok, buffer = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 82])
+    if not ok:
+        return None
+    return (
+        b"--frame\r\n"
+        b"Content-Type: image/jpeg\r\n\r\n" + buffer.tobytes() + b"\r\n"
+    )
+
+
+def black_placeholder_jpeg(message="Camera off"):
+    frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+    cv2.rectangle(frame, (40, 40), (1240, 680), (25, 35, 55), -1)
+    cv2.rectangle(frame, (40, 40), (1240, 680), (55, 75, 110), 3)
+    cv2.putText(
+        frame,
+        message,
+        (360, 340),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        1.4,
+        (148, 163, 184),
+        3,
+        cv2.LINE_AA,
+    )
+    cv2.putText(
+        frame,
+        "No camera feed is being captured",
+        (390, 400),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.8,
+        (100, 116, 139),
+        2,
+        cv2.LINE_AA,
+    )
+    return jpeg_frame(frame)
+
+
 def frame_stream():
-    cap = open_camera()
-    if cap is None:
-        update_metrics({"count": 0, "max_confidence": 0.0, "avg_confidence": 0.0}, "camera unavailable")
-        return
+    cap = None
+    active_source = None
+    active_enabled = None
 
     try:
         while True:
+            desired_source, power_on = get_camera_state()
+
+            if not power_on:
+                if cap is not None:
+                    cap.release()
+                    cap = None
+                active_source = None
+                active_enabled = False
+                update_metrics(dict(ZERO_METRICS), "camera off")
+                payload = black_placeholder_jpeg("Camera off")
+                if payload:
+                    yield payload
+                time.sleep(0.12)
+                continue
+
+            if active_enabled is False or desired_source != active_source:
+                if cap is not None:
+                    cap.release()
+                    cap = None
+
+                cap = open_camera(parse_camera_source(desired_source))
+                active_source = desired_source
+                active_enabled = True
+
+                if cap is None:
+                    update_metrics(
+                        dict(ZERO_METRICS),
+                        f"camera unavailable: {camera_label(desired_source, True)}",
+                    )
+                    payload = black_placeholder_jpeg(
+                        f"Unavailable: {camera_label(desired_source, True)}"
+                    )
+                    if payload:
+                        yield payload
+                    time.sleep(1.0)
+                    continue
+
+                update_metrics({}, f"streaming {camera_label(desired_source, True)}")
+
             ret, frame = cap.read()
             if not ret:
-                update_metrics({"count": 0, "max_confidence": 0.0, "avg_confidence": 0.0}, "frame read failed")
-                break
+                update_metrics(dict(ZERO_METRICS), "frame read failed - retrying")
+                if cap is not None:
+                    cap.release()
+                    cap = None
+                active_source = None
+                time.sleep(1.0)
+                continue
 
             with state_lock:
                 active_calibration = Calibration(**calibration.as_dict())
@@ -60,16 +240,12 @@ def frame_stream():
             annotated, metrics = annotate_frame(frame, result, active_calibration)
             update_metrics(metrics)
 
-            ok, buffer = cv2.imencode(".jpg", annotated, [int(cv2.IMWRITE_JPEG_QUALITY), 82])
-            if not ok:
-                continue
-
-            yield (
-                b"--frame\r\n"
-                b"Content-Type: image/jpeg\r\n\r\n" + buffer.tobytes() + b"\r\n"
-            )
+            payload = jpeg_frame(annotated)
+            if payload:
+                yield payload
     finally:
-        cap.release()
+        if cap is not None:
+            cap.release()
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -101,7 +277,31 @@ def dashboard():
     .control { margin-top: 14px; }
     .control-row { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; color: #cbd5e1; }
     input[type=range] { width: 100%; accent-color: #06b6d4; margin-top: 8px; }
+    select, input[type=text] { width: 100%; margin-top: 8px; border: 1px solid rgba(255,255,255,.14); background: rgba(2,6,23,.7); color: #e2e8f0; border-radius: 12px; padding: 10px 12px; font: inherit; }
     button { width: 100%; margin-top: 14px; border: 0; border-radius: 14px; background: #0891b2; color: white; padding: 12px 14px; font-weight: 800; cursor: pointer; }
+    button.secondary { background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.14); }
+    button.danger { background: #b91c1c; }
+    button.danger:hover { background: #dc2626; }
+    .stream-wrap { position: relative; }
+    .stream-off {
+      position: absolute;
+      inset: 0;
+      display: none;
+      place-items: center;
+      border-radius: 18px;
+      background: #000;
+      color: #94a3b8;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      pointer-events: none;
+    }
+    .stream-off.visible { display: grid; }
+    .start-picker { display: none; margin-top: 12px; padding: 12px; border: 1px solid rgba(34,211,238,.35); background: rgba(8,145,178,.12); border-radius: 14px; }
+    .start-picker.visible { display: block; }
+    .start-picker .hint { color: #a5f3fc; }
+    .settings { border-top: 1px dashed rgba(255,255,255,.14); margin-top: 6px; padding-top: 12px; }
+    .hint { margin-top: 8px; color: #94a3b8; font-size: 12px; line-height: 1.4; }
     .insight { color: #cbd5e1; line-height: 1.45; font-size: 14px; }
     @media (max-width: 980px) { .grid { grid-template-columns: 1fr; } header { align-items: start; flex-direction: column; } }
   </style>
@@ -117,7 +317,10 @@ def dashboard():
     </header>
     <section class="grid">
       <div class="panel">
-        <img class="stream" src="/stream" alt="Tilapiers live fish detection stream" />
+        <div class="stream-wrap">
+          <img class="stream" src="/stream" alt="Tilapiers live fish detection stream" />
+          <div id="streamOff" class="stream-off">Camera off - no feed</div>
+        </div>
       </div>
       <aside class="cards">
         <div class="card">
@@ -139,6 +342,43 @@ def dashboard():
         <div class="card">
           <div class="label">Stream status</div>
           <div id="status" class="value warn" style="font-size: 22px;">starting</div>
+          <div class="hint">Active camera: <span id="cameraLabel" class="ok">Auto</span></div>
+        </div>
+        <div class="card">
+          <div class="label">Settings - camera source</div>
+          <button id="toggleCamera" class="danger" type="button" data-enabled="true">Stop camera</button>
+          <div class="hint">Stop fully releases the webcam. Start scans for cameras and only shows a picker if more than one is found.</div>
+          <div id="startPicker" class="start-picker" hidden>
+            <div class="label" style="color:#67e8f9;">Multiple cameras detected</div>
+            <div class="hint" id="startPickerHint">Choose a camera, then start the feed.</div>
+            <div class="control">
+              <div class="control-row"><span>Detected source</span><strong id="startPickerLabel">-</strong></div>
+              <select id="startPickerSelect" aria-label="Detected camera source"></select>
+            </div>
+            <button id="startPickerConfirm" type="button">Start selected camera</button>
+            <button id="startPickerCancel" class="secondary" type="button">Cancel</button>
+          </div>
+          <div class="control">
+            <div class="control-row"><span>Choose camera</span><strong id="cameraSourceLabel">auto</strong></div>
+            <select id="cameraSource" aria-label="Camera source">
+              <option value="auto">Auto (first available)</option>
+              <option value="0">Camera 0</option>
+              <option value="1">Camera 1</option>
+              <option value="2">Camera 2</option>
+              <option value="3">Camera 3</option>
+              <option value="4">Camera 4</option>
+              <option value="5">Camera 5</option>
+              <option value="6">Camera 6</option>
+              <option value="7">Camera 7</option>
+            </select>
+          </div>
+          <div class="control">
+            <div class="control-row"><span>Custom source (index or URL)</span></div>
+            <input id="cameraCustom" type="text" placeholder="e.g. 1 or rtsp://user:pass@host/stream" />
+          </div>
+          <button id="scanCameras" class="secondary" type="button">Scan available cameras</button>
+          <button id="applyCamera" type="button">Apply camera</button>
+          <div id="cameraMessage" class="hint">Applies without restarting the stream.</div>
         </div>
         <div class="card">
           <div class="label">Calibration</div>
@@ -213,11 +453,194 @@ def dashboard():
       $("suppressed").textContent = `${data.suppressed_people || 0} filtered`;
       $("modelName").textContent = data.model.name;
       $("modelClasses").textContent = data.model.classes.join(", ");
+      const enabled = data.camera_enabled !== false;
+      $("cameraLabel").textContent = data.camera_label || (enabled ? "Auto" : "Off");
+      $("toggleCamera").dataset.enabled = String(enabled);
+      $("toggleCamera").textContent = enabled ? "Stop camera" : "Start camera";
+      $("toggleCamera").classList.toggle("danger", enabled);
+      $("toggleCamera").classList.toggle("secondary", !enabled);
+      $("streamOff").classList.toggle("visible", !enabled);
+      if (enabled) hideStartPicker();
+      const cameraValue = data.camera ?? "auto";
+      if (![...$("cameraSource").options].some((option) => option.value === cameraValue)) {
+        const option = document.createElement("option");
+        option.value = cameraValue;
+        option.textContent = data.camera_label || cameraValue;
+        $("cameraSource").appendChild(option);
+      }
+      if (document.activeElement !== $("cameraSource")) {
+        $("cameraSource").value = cameraValue;
+        $("cameraSourceLabel").textContent = data.camera_label || cameraValue;
+      }
       const entries = Object.entries(data.class_counts || {});
       $("breakdown").textContent = entries.length
         ? entries.map(([name, count]) => `${name}: ${count}`).join(" | ")
         : "No detections yet";
     }
+
+    function hideStartPicker() {
+      $("startPicker").classList.remove("visible");
+      $("startPicker").hidden = true;
+    }
+
+    async function setCameraPower(enabled) {
+      const res = await fetch("/api/camera/power", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled })
+      });
+      if (!res.ok) throw new Error("Failed to toggle camera power");
+      return res.json();
+    }
+
+    async function setCameraSource(source) {
+      const res = await fetch("/api/camera", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source })
+      });
+      const data = await res.json();
+      if (!res.ok || data.ok === false) throw new Error(data.error || "Failed to set camera");
+      return data;
+    }
+
+    async function startCameraWithSource(source) {
+      await setCameraSource(source);
+      const data = await setCameraPower(true);
+      hideStartPicker();
+      $("cameraMessage").textContent = `Camera started on ${data.camera_label}`;
+      $("cameraSourceLabel").textContent = data.camera_label;
+      await refresh();
+      return data;
+    }
+
+    function fillSelect(select, cameras, includeAuto = true) {
+      const current = select.value;
+      select.innerHTML = includeAuto ? '<option value="auto">Auto (first available)</option>' : "";
+      cameras.forEach((camera) => {
+        const option = document.createElement("option");
+        option.value = camera.source;
+        option.textContent = camera.label;
+        select.appendChild(option);
+      });
+      if ([...select.options].some((option) => option.value === current)) {
+        select.value = current;
+      }
+      return select;
+    }
+
+    async function toggleCamera() {
+      const currentlyEnabled = $("toggleCamera").dataset.enabled !== "false";
+      if (currentlyEnabled) {
+        $("toggleCamera").textContent = "Stopping...";
+        try {
+          const data = await setCameraPower(false);
+          hideStartPicker();
+          $("cameraMessage").textContent = "Camera stopped - feed blacked out";
+          await refresh();
+        } catch (error) {
+          $("cameraMessage").textContent = "Failed to toggle camera";
+          await refresh();
+        }
+        return;
+      }
+
+      $("toggleCamera").textContent = "Scanning...";
+      $("cameraMessage").textContent = "Scanning for cameras...";
+      try {
+        const res = await fetch("/api/cameras");
+        const data = await res.json();
+        const detected = data.detected || [];
+
+        fillSelect($("cameraSource"), detected || [], true);
+
+        if (detected.length === 0) {
+          await startCameraWithSource("auto");
+          $("cameraMessage").textContent = "No camera detected - started with Auto";
+          return;
+        }
+
+        if (detected.length === 1) {
+          await startCameraWithSource(detected[0].source);
+          $("cameraMessage").textContent = `Single camera found - started ${detected[0].label}`;
+          return;
+        }
+
+        const select = $("startPickerSelect");
+        fillSelect(select, detected, false);
+        select.value = detected[0].source;
+        $("startPickerLabel").textContent = detected[0].label;
+        $("startPickerHint").textContent = `${detected.length} cameras detected. Choose one to start the feed.`;
+        $("startPicker").hidden = false;
+        $("startPicker").classList.add("visible");
+        $("cameraMessage").textContent = `${detected.length} cameras detected - choose one below`;
+        $("toggleCamera").textContent = "Start camera";
+      } catch (error) {
+        $("cameraMessage").textContent = "Camera scan failed";
+        $("toggleCamera").textContent = "Start camera";
+        await refresh();
+      }
+    }
+
+    function cameraPayloadFromUi() {
+      const custom = $("cameraCustom").value.trim();
+      if (custom) return custom;
+      return $("cameraSource").value;
+    }
+
+    async function applyCamera() {
+      const source = cameraPayloadFromUi();
+      $("cameraMessage").textContent = "Switching camera...";
+      try {
+        const data = await setCameraSource(source);
+        if (data.ok === false) throw new Error(data.error || "Failed to switch camera");
+        $("cameraMessage").textContent = `Using ${data.camera_label}`;
+        $("cameraSourceLabel").textContent = data.camera_label;
+        await refresh();
+      } catch (error) {
+        $("cameraMessage").textContent = error.message || "Failed to switch camera";
+      }
+    }
+
+    $("applyCamera").addEventListener("click", applyCamera);
+    $("toggleCamera").addEventListener("click", toggleCamera);
+    $("cameraSource").addEventListener("change", applyCamera);
+    $("startPickerSelect").addEventListener("change", () => {
+      const option = $("startPickerSelect").selectedOptions[0];
+      $("startPickerLabel").textContent = option ? option.textContent : "-";
+    });
+    $("startPickerConfirm").addEventListener("click", async () => {
+      const source = $("startPickerSelect").value;
+      $("startPickerConfirm").textContent = "Starting...";
+      try {
+        await startCameraWithSource(source);
+        $("cameraMessage").textContent = `Camera started on ${$("cameraSourceLabel").textContent}`;
+      } catch (error) {
+        $("cameraMessage").textContent = error.message || "Failed to start camera";
+      } finally {
+        $("startPickerConfirm").textContent = "Start selected camera";
+      }
+    });
+    $("startPickerCancel").addEventListener("click", () => {
+      hideStartPicker();
+      $("toggleCamera").textContent = "Start camera";
+      $("cameraMessage").textContent = "Start cancelled - camera remains off";
+    });
+    $("scanCameras").addEventListener("click", async () => {
+      $("cameraMessage").textContent = "Scanning cameras...";
+      try {
+        const res = await fetch("/api/cameras");
+        const data = await res.json();
+        fillSelect($("cameraSource"), data.cameras || [], true);
+        const detected = data.detected || [];
+        $("cameraMessage").textContent = detected.length
+          ? `Found ${detected.length} working camera${detected.length === 1 ? "" : "s"}`
+          : "No working cameras detected - keep Auto or type an index";
+      } catch (error) {
+        $("cameraMessage").textContent = "Camera scan failed";
+      }
+    });
+
     syncLabels();
     setInterval(refresh, 750);
     refresh();
@@ -238,11 +661,64 @@ def status():
         return {
             **latest_metrics,
             "calibration": calibration.as_dict(),
+            "camera": camera_source,
+            "camera_label": camera_label(camera_source, camera_enabled),
+            "camera_enabled": camera_enabled,
             "model": {
                 "name": MODEL_PATH.name,
                 "path": str(MODEL_PATH),
                 "classes": list(model.names.values()),
             },
+        }
+
+
+@app.get("/api/cameras")
+def cameras():
+    try:
+        found = list_cameras()
+    except Exception as exc:
+        return {"cameras": [], "error": str(exc)}
+
+    options = [{"index": index, "label": f"Camera {index}", "source": str(index)} for index in range(8)]
+    known = {camera["index"] for camera in found}
+    merged = found + [option for option in options if option["index"] not in known]
+    return {"cameras": merged, "detected": found}
+
+
+@app.post("/api/camera")
+def update_camera(update: CameraUpdate):
+    try:
+        source = set_camera_source(update.source)
+    except ValueError as exc:
+        with state_lock:
+            return {
+                "ok": False,
+                "error": str(exc),
+                "camera": camera_source,
+                "camera_label": camera_label(camera_source, camera_enabled),
+                "camera_enabled": camera_enabled,
+            }
+
+    with state_lock:
+        return {
+            "ok": True,
+            "camera": source,
+            "camera_label": camera_label(source, camera_enabled),
+            "camera_enabled": camera_enabled,
+            "status": latest_metrics["status"],
+        }
+
+
+@app.post("/api/camera/power")
+def update_camera_power(update: CameraPowerUpdate):
+    enabled = set_camera_enabled(update.enabled)
+    with state_lock:
+        return {
+            "ok": True,
+            "camera_enabled": enabled,
+            "camera": camera_source,
+            "camera_label": camera_label(camera_source, enabled),
+            "status": latest_metrics["status"],
         }
 
 
