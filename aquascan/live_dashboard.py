@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from detection_core import Calibration, annotate_frame, detect_fish, load_model, load_person_model, open_camera
 from model_config import MODEL_PATH
 
-app = FastAPI(title="AquaScan Live Dashboard")
+app = FastAPI(title="Tilapiers Live Dashboard")
 
 model = load_model()
 person_model = load_person_model()
@@ -80,7 +80,7 @@ def dashboard():
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>AquaScan Live Dashboard</title>
+  <title>Tilapiers Live Dashboard</title>
   <style>
     :root { color-scheme: dark; font-family: Inter, Segoe UI, Arial, sans-serif; background: #020617; color: #e2e8f0; }
     * { box-sizing: border-box; }
@@ -110,18 +110,18 @@ def dashboard():
   <main>
     <header>
       <div>
-        <h1>AquaScan Live</h1>
-        <div class="subtitle">Fish health detection dashboard with live calibration controls</div>
+        <h1>Tilapiers Live</h1>
+        <div class="subtitle">Tilapia, pellets, and waste detection with live calibration controls</div>
       </div>
       <div class="panel insight">Model: <span id="modelName" class="ok">loading</span><br/>Classes: <span id="modelClasses">loading</span><br/>Press Ctrl+C in the terminal to stop the server.</div>
     </header>
     <section class="grid">
       <div class="panel">
-        <img class="stream" src="/stream" alt="AquaScan live fish detection stream" />
+        <img class="stream" src="/stream" alt="Tilapiers live fish detection stream" />
       </div>
       <aside class="cards">
         <div class="card">
-          <div class="label">Disease detections</div>
+          <div class="label">Detections</div>
           <div id="count" class="value">0</div>
         </div>
         <div class="card">
@@ -163,7 +163,7 @@ def dashboard():
           <button id="apply">Apply calibration</button>
         </div>
         <div class="card insight">
-          Start with Balanced. Keep people out of frame. The dashboard now filters detections that overlap a COCO person box to reduce false positives from skin/clothes.
+          Start with Balanced. Active model is weights/best.pt (Tilapia, pellets, waste). Keep people out of frame to reduce false positives from skin/clothes.
         </div>
       </aside>
     </section>

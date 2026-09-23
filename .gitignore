@@ -19,3 +19,8 @@ __pycache__/
 runs/
 **/runs/
 *.cache
+weights/last.pt
+
+# Logs
+*.log
+**/*.log

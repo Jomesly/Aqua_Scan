@@ -1,6 +1,6 @@
-# AquaScan Backend
+# Tilapiers Backend
 
-Local YOLOv8 backend for AquaScan fish health detection.
+Local YOLOv8 backend for Tilapiers feed-pellet and tank monitoring.
 
 ## Main commands
 
@@ -22,17 +22,9 @@ Test the active model:
 .\venv\Scripts\python.exe check_model.py
 ```
 
-Train the wound/redness disease model longer:
-
-```powershell
-.\venv\Scripts\python.exe train_disease_model.py --dataset wound --epochs 25 --imgsz 640 --batch 8 --device cpu
-```
-
 ## Important files
 
 - `live_dashboard.py` - browser dashboard with webcam stream and calibration controls
 - `detection_core.py` - shared model loading, camera startup, filtering, and metrics
 - `model_config.py` - active model path and calibration presets
-- `models/aquascan_disease_best.pt` - current dashboard model
-- `models/aquascan_fish_best.pt` - fallback fish detector model
-- `datasets/*.yaml` - dataset configs for training
+- `../weights/best.pt` - active trained model (Tilapia / pellets / waste)

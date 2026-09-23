@@ -177,7 +177,7 @@ def detect_fish(frame, model, calibration, person_model=None):
     )
     result = filter_result(results[0], frame.shape, calibration)
     result, suppressed = suppress_person_overlaps(frame, result, person_model)
-    result.aquascan_suppressed_people = suppressed
+    result.tilapiers_suppressed_people = suppressed
     return result
 
 
@@ -195,7 +195,7 @@ def result_metrics(result):
         "max_confidence": max(confidences) if confidences else 0.0,
         "avg_confidence": sum(confidences) / len(confidences) if confidences else 0.0,
         "class_counts": class_counts,
-        "suppressed_people": getattr(result, "aquascan_suppressed_people", 0),
+        "suppressed_people": getattr(result, "tilapiers_suppressed_people", 0),
     }
 
 

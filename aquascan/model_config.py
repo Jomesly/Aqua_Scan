@@ -1,9 +1,7 @@
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parent
-DISEASE_MODEL_PATH = ROOT_DIR / "models" / "aquascan_disease_best.pt"
-FISH_MODEL_PATH = ROOT_DIR / "models" / "aquascan_fish_best.pt"
-MODEL_PATH = DISEASE_MODEL_PATH if DISEASE_MODEL_PATH.exists() else FISH_MODEL_PATH
+MODEL_PATH = ROOT_DIR.parent / "weights" / "best.pt"
 PERSON_MODEL_PATH = ROOT_DIR / "yolov8n.pt"
 
 DETECTION_CLASS_IDS = None

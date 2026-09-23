@@ -13,7 +13,7 @@ if cap is None:
     print("Close other camera apps, check Windows camera permissions, then try again.")
     exit()
 
-print("AquaScan FISH detection running — press Q to quit")
+print("Tilapiers detection running — press Q to quit")
 print(
     "Calibration: "
     f"fish-only, confidence >= {calibration.confidence}, "
@@ -28,7 +28,7 @@ while True:
     result = detect_fish(frame, model, calibration)
     annotated_frame, _ = annotate_frame(frame, result, calibration)
 
-    cv2.imshow("AquaScan — Fish Detection", annotated_frame)
+    cv2.imshow("Tilapiers — Fish Detection", annotated_frame)
 
     if cv2.waitKey(1) & 0xFF == ord("q"):
         break

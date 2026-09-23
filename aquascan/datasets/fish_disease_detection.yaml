@@ -1,9 +1,0 @@
-path: C:/CodingProjects/Aqua_Scan/fish disease detection.v7i.yolov8
-train: train/images
-val: valid/images
-test: test/images
-
-nc: 2
-names:
-  0: mild_red
-  1: wound

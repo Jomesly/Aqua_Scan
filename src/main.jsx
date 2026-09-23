@@ -24,73 +24,73 @@ import './styles.css';
 
 const alerts = [
   {
-    id: 'AQ-2406-019',
+    id: 'TL-2406-019',
     time: '2026-06-13 09:42:18',
     shortTime: '09:42',
     species: 'Tilapia',
     confidence: 94,
     severity: 'Critical',
     count: 3,
-    camera: 'Aquarium Tank A - Camera 01',
-    condition: 'surface gasping and pale discoloration',
-    note: 'Possible stress response detected with low dissolved oxygen reading.',
+    camera: 'Feeding Zone - Camera 01',
+    condition: 'environment unsafe - feeding withheld',
+    note: 'Dissolved oxygen below 3 mg/L. SMS alert sent to caretaker.',
   },
   {
-    id: 'AQ-2406-018',
+    id: 'TL-2406-018',
     time: '2026-06-13 09:34:05',
     shortTime: '09:34',
-    species: 'Bangus',
+    species: 'Pellets',
     confidence: 88,
     severity: 'Warning',
     count: 6,
-    camera: 'Aquarium Tank B - Camera 03',
-    condition: 'erratic swimming near aerator',
-    note: 'Abnormal movement density detected during water circulation cycle.',
+    camera: 'Feeding Zone - Camera 03',
+    condition: 'low depletion - uneaten feed remaining',
+    note: 'Pellet depletion below 0.40. Session stopped and remaining pellets logged.',
   },
   {
-    id: 'AQ-2406-017',
+    id: 'TL-2406-017',
     time: '2026-06-13 09:21:44',
     shortTime: '09:21',
-    species: 'Carp',
+    species: 'Pellets',
     confidence: 91,
     severity: 'Normal',
     count: 4,
-    camera: 'Aquarium Tank C - Camera 02',
-    condition: 'normal appearance',
-    note: 'Routine pass through monitoring lane with stable behavior and clear water.',
+    camera: 'Feeding Zone - Camera 02',
+    condition: 'high depletion - continue full increment',
+    note: 'Depletion rate at or above 0.80. Next full increment dispensed.',
   },
   {
-    id: 'AQ-2406-016',
+    id: 'TL-2406-016',
     time: '2026-06-13 09:08:30',
     shortTime: '09:08',
     species: 'Tilapia',
     confidence: 86,
     severity: 'Normal',
     count: 5,
-    camera: 'Aquarium Tank A - Camera 04',
-    condition: 'healthy schooling pattern',
-    note: 'Healthy schooling pattern observed after scheduled feeding.',
+    camera: 'Feeding Zone - Camera 04',
+    condition: 'environment safe - feeding recommended',
+    note: 'Temperature and dissolved oxygen within Safe bands.',
   },
 ];
 
 const cameraTiles = [
-  { name: 'Tank A - Cam 01', species: 'Tilapia', confidence: 94, fish: 3, condition: 'pale discoloration', accent: 'from-sky-500/30' },
-  { name: 'Tank B - Cam 03', species: 'Bangus', confidence: 88, fish: 6, condition: 'erratic swimming', accent: 'from-cyan-500/25' },
-  { name: 'Tank C - Cam 02', species: 'Carp', confidence: 91, fish: 4, condition: 'normal appearance', accent: 'from-emerald-500/25' },
-  { name: 'Quarantine - Cam 04', species: 'Tilapia', confidence: 82, fish: 2, condition: 'fin damage watch', accent: 'from-indigo-500/25' },
+  { name: 'Feeding Zone - Cam 01', species: 'Pellets', confidence: 94, fish: 12, condition: 'high depletion', accent: 'from-sky-500/30' },
+  { name: 'Feeding Zone - Cam 03', species: 'Pellets', confidence: 88, fish: 6, condition: 'moderate depletion', accent: 'from-cyan-500/25' },
+  { name: 'Feeding Zone - Cam 02', species: 'Pellets', confidence: 91, fish: 4, condition: 'low depletion', accent: 'from-emerald-500/25' },
+  { name: 'Feeding Zone - Cam 04', species: 'Tilapia', confidence: 82, fish: 2, condition: 'environment safe', accent: 'from-indigo-500/25' },
 ];
 
 const waterSensors = [
   { name: 'Temperature', value: '27.4', unit: 'C', status: 'Normal', trend: 'steady' },
+  { name: 'Dissolved Oxygen', value: '4.8', unit: 'mg/L', status: 'Normal', trend: 'stable' },
   { name: 'pH Level', value: '7.2', unit: '', status: 'Normal', trend: 'stable' },
-  { name: 'Dissolved Oxygen', value: '5.1', unit: 'mg/L', status: 'Warning', note: 'low', trend: 'dropping' },
   { name: 'Turbidity', value: '3.8', unit: 'NTU', status: 'Normal', trend: 'clear' },
 ];
 
 const detectionChecks = [
-  { label: 'Camera clarity', value: 'Good', detail: 'Lens clear, no glare detected', status: 'pass' },
-  { label: 'Lighting level', value: 'Needs review', detail: 'Low light can hide lesions and fins', status: 'warn' },
-  { label: 'Water turbidity', value: '3.8 NTU', detail: 'Still acceptable for YOLOv8 frame analysis', status: 'pass' },
+  { label: 'Camera clarity', value: 'Good', detail: 'Feeding-zone ROI clear, no glare', status: 'pass' },
+  { label: 'Lighting level', value: 'Needs review', detail: 'Low light can reduce pellet confidence', status: 'warn' },
+  { label: 'Water turbidity', value: '3.8 NTU', detail: 'Acceptable for YOLOv8 pellet analysis', status: 'pass' },
   { label: 'Model confidence', value: '82-94%', detail: 'Below 80% should be treated as uncertain', status: 'warn' },
 ];
 
@@ -98,61 +98,61 @@ const historyRecords = [
   {
     id: 'HIS-2406-033',
     time: '2026-06-14 07:28:42',
-    species: 'Tilapia',
-    condition: 'surface gasping pattern',
+    species: 'Pellets',
+    condition: 'environment unsafe - feeding withheld',
     confidence: 95,
-    camera: 'Tank A - Cam 01',
+    camera: 'Feeding Zone - Cam 01',
     severity: 'Critical',
-    water: { temp: '28.1 C', ph: '7.0', oxygen: '4.6 mg/L' },
+    water: { temp: '32.1 C', ph: '7.0', oxygen: '2.6 mg/L' },
   },
   {
     id: 'HIS-2406-032',
     time: '2026-06-14 03:12:09',
-    species: 'Bangus',
-    condition: 'erratic schooling near aerator',
+    species: 'Pellets',
+    condition: 'low depletion - session stopped',
     confidence: 89,
-    camera: 'Tank B - Cam 03',
+    camera: 'Feeding Zone - Cam 03',
     severity: 'Warning',
     water: { temp: '27.8 C', ph: '7.4', oxygen: '5.0 mg/L' },
   },
   {
     id: 'HIS-2406-031',
     time: '2026-06-13 22:44:51',
-    species: 'Carp',
-    condition: 'normal patrol movement',
+    species: 'Pellets',
+    condition: 'high depletion - full increment',
     confidence: 92,
-    camera: 'Tank C - Cam 02',
+    camera: 'Feeding Zone - Cam 02',
     severity: 'Normal',
     water: { temp: '26.9 C', ph: '7.3', oxygen: '6.2 mg/L' },
   },
   {
     id: 'HIS-2406-030',
     time: '2026-06-13 15:36:18',
-    species: 'Tilapia',
-    condition: 'reduced feeding response',
+    species: 'Pellets',
+    condition: 'moderate depletion - half increment',
     confidence: 87,
-    camera: 'Tank A - Cam 04',
+    camera: 'Feeding Zone - Cam 04',
     severity: 'Warning',
-    water: { temp: '29.0 C', ph: '7.1', oxygen: '5.2 mg/L' },
+    water: { temp: '29.0 C', ph: '7.1', oxygen: '4.2 mg/L' },
   },
   {
     id: 'HIS-2406-029',
     time: '2026-06-13 08:05:27',
-    species: 'Bangus',
-    condition: 'healthy schooling pattern',
+    species: 'Tilapia',
+    condition: 'environment safe - feeding recommended',
     confidence: 91,
-    camera: 'Tank B - Cam 01',
+    camera: 'Feeding Zone - Cam 01',
     severity: 'Normal',
-    water: { temp: '27.2 C', ph: '7.5', oxygen: '6.5 mg/L' },
+    water: { temp: '27.2 C', ph: '7.5', oxygen: '5.5 mg/L' },
   },
   {
     id: 'HIS-2406-028',
     time: '2026-06-12 18:49:03',
-    species: 'Carp',
-    condition: 'rapid clustering at inlet',
+    species: 'Waste',
+    condition: 'uneaten feed flagged in ROI',
     confidence: 93,
-    camera: 'Tank C - Cam 02',
-    severity: 'Critical',
+    camera: 'Feeding Zone - Cam 02',
+    severity: 'Warning',
     water: { temp: '28.6 C', ph: '6.8', oxygen: '4.8 mg/L' },
   },
 ];
@@ -200,8 +200,8 @@ function AquaLogo({ compact = false }) {
       </div>
       {!compact && (
         <div>
-          <div className="text-xl font-semibold tracking-tight text-white">AquaScan</div>
-          <div className="text-xs uppercase tracking-[0.28em] text-slate-400">Aquarium health monitoring</div>
+          <div className="text-xl font-semibold tracking-tight text-white">Tilapiers</div>
+          <div className="text-xs uppercase tracking-[0.28em] text-slate-400">Pellet detection and feeding</div>
         </div>
       )}
     </div>
@@ -218,14 +218,14 @@ function SimulatedFeed({ compact = false, tile }) {
       <div className="absolute left-[23%] top-[39%] h-5 w-20 rounded-full bg-cyan-200/70 blur-sm" />
       <div className="absolute left-[57%] top-[36%] h-[25%] w-[25%] rounded-[45%] border-2 border-sky-300" />
       <div className="absolute left-[18%] top-[25%] rounded-full bg-cyan-300 px-2.5 py-1 text-[11px] font-semibold text-slate-950 shadow-lg">
-        {tile ? `${tile.species} ${tile.confidence}% - ${tile.condition}` : 'Fish detected - Tilapia (94% confidence)'}
+        {tile ? `${tile.species} ${tile.confidence}% - ${tile.condition}` : 'Pellets detected - 12 in ROI (94% confidence)'}
       </div>
       <div className="absolute right-4 top-4 flex items-center gap-2 rounded-full bg-slate-950/70 px-3 py-1.5 text-xs font-medium text-cyan-100 backdrop-blur">
         <span className="size-2 rounded-full bg-emerald-400 shadow-[0_0_12px_#22c55e]" /> Live
       </div>
       <div className="absolute bottom-4 left-4 right-4 flex items-center justify-between rounded-2xl bg-slate-950/70 px-4 py-3 text-sm text-white backdrop-blur">
-        <span>{tile?.name || 'Tank A - Camera 01'}</span>
-        <span className="text-cyan-200">YOLOv8n - {tile?.fish || 3} fish</span>
+        <span>{tile?.name || 'Feeding Zone - Camera 01'}</span>
+        <span className="text-cyan-200">YOLOv8n - {tile?.fish || 12} pellets</span>
       </div>
     </div>
   );
@@ -237,7 +237,7 @@ function MobileHome({ activeScreen = 'Home', onScreenChange }) {
       <div className="bg-gradient-to-br from-sky-500 to-cyan-500 px-5 pb-7 pt-6 text-white">
         <div className="flex items-center justify-between">
           <div>
-            <div className="text-sm text-sky-100">AquaScan Mobile</div>
+            <div className="text-sm text-sky-100">Tilapiers Mobile</div>
             <h2 className="text-2xl font-semibold">Live camera feed</h2>
           </div>
           <div className="grid size-11 place-items-center rounded-full bg-white/18">
@@ -249,7 +249,7 @@ function MobileHome({ activeScreen = 'Home', onScreenChange }) {
         <div className="relative">
           <SimulatedFeed />
           <div className="absolute -top-3 left-5 flex items-center gap-2 rounded-full bg-white px-3 py-2 text-xs font-semibold text-slate-700 shadow-xl ring-1 ring-slate-200">
-            <span className="size-2 rounded-full bg-emerald-500" /> AI active - 3 fish detected
+            <span className="size-2 rounded-full bg-emerald-500" /> AI active - 12 pellets detected
           </div>
         </div>
         <div className="mt-4 grid grid-cols-2 gap-3">
@@ -303,7 +303,7 @@ function MobileAlerts({ activeScreen = 'Alerts', onScreenChange }) {
     <section className="flex h-full flex-col bg-slate-50">
       <div className="px-5 pb-3 pt-6">
         <div className="text-sm font-medium text-sky-600">Firebase Cloud Messaging</div>
-        <h2 className="text-2xl font-semibold text-slate-950">Detection alerts</h2>
+        <h2 className="text-2xl font-semibold text-slate-950">Feeding alerts</h2>
       </div>
       <div className="flex-1 space-y-3 overflow-hidden px-4">
         {alerts.slice(0, 3).map((alert) => (
@@ -406,7 +406,7 @@ function MobileDetail({ onScreenChange }) {
         <div className="flex items-center justify-between">
           <div>
             <div className="text-sm text-red-200">Notification detail</div>
-            <h2 className="text-2xl font-semibold">Critical detection</h2>
+            <h2 className="text-2xl font-semibold">Critical alert</h2>
           </div>
           <ShieldAlert className="size-8 text-red-300" />
         </div>
@@ -492,7 +492,7 @@ function Dashboard() {
       </header>
 
       <div className="mt-6 grid grid-cols-4 gap-4">
-        <StatCard icon={<Fish />} label="Health detections today" value="1,284" trend="Visible symptoms and behavior" />
+        <StatCard icon={<Fish />} label="Pellet detections today" value="1,284" trend="Feeding-zone ROI counts" />
         <StatCard icon={<AlertTriangle />} label="Active alerts" value="7" trend="2 need review" warn />
         <StatCard icon={<Camera />} label="Camera feeds online" value="4 / 4" trend="All ponds connected" />
         <StatCard icon={<Clock3 />} label="System uptime" value="99.92%" trend="18 days stable" />
@@ -600,7 +600,7 @@ function TimelineChart() {
       <div className="mb-4 flex items-center justify-between">
         <div>
           <h3 className="text-lg font-semibold text-white">Detection timeline</h3>
-          <p className="text-sm text-slate-400">Last 24 hours - fish health detections per hour</p>
+          <p className="text-sm text-slate-400">Last 24 hours - pellet detections per hour</p>
         </div>
         <div className="flex items-center gap-2 text-sm text-slate-300"><Activity className="size-4 text-cyan-300" /> Peak at 16:00</div>
       </div>
@@ -639,7 +639,7 @@ function CorrelationPanel() {
       <div className="mb-4 flex items-start justify-between gap-4">
         <div>
           <h3 className="text-lg font-semibold text-white">Sensor-detection correlation</h3>
-          <p className="text-sm text-slate-400">Supports thesis claim: water quality directly influences fish health indicators</p>
+          <p className="text-sm text-slate-400">Supports thesis claim: water quality gates safe feeding decisions</p>
         </div>
         <div className="flex items-center gap-4 text-xs text-slate-300">
           <span className="inline-flex items-center gap-2"><span className="size-2 rounded-full bg-cyan-300" /> Detections</span>
@@ -672,15 +672,15 @@ function CorrelationPanel() {
             })}
           </svg>
           <div className="absolute right-5 top-20 max-w-[280px] rounded-2xl border border-amber-300/30 bg-amber-300/10 px-4 py-3 text-xs font-medium leading-5 text-amber-100">
-            DO drop at 09:00 correlates with 3x detection spike - possible stress response
+            DO drop at 09:00 correlates with reduced pellet activity - feeding withheld
           </div>
         </div>
       </div>
 
       <div className="mt-4 grid grid-cols-3 gap-3">
-        <InsightCard text="Low DO detected → fish clustering behavior (+180%)" tone="warning" />
-        <InsightCard text="pH stable → no behavioral anomaly noted" />
-        <InsightCard text="Temperature rise at 14:00 → mild fin damage detections increased" tone="notice" />
+        <InsightCard text="Low DO detected → feeding withheld and SMS alert sent" tone="warning" />
+        <InsightCard text="Temp and DO in Safe bands → feeding recommended" />
+        <InsightCard text="Temperature rise at 14:00 → reduced depletion observed" tone="notice" />
       </div>
     </div>
   );
@@ -706,7 +706,7 @@ function DetectionReliabilityPanel() {
       <div className="mb-4 flex items-start justify-between gap-4">
         <div>
           <h3 className="text-lg font-semibold text-white">Detection reliability scan</h3>
-          <p className="text-sm text-slate-400">Use this when YOLOv8 sometimes cannot detect fish or visible health symptoms.</p>
+          <p className="text-sm text-slate-400">Use this when YOLOv8 pellet confidence drops or counts look unstable.</p>
         </div>
         <div className="rounded-full border border-cyan-300/25 bg-cyan-300/10 px-3 py-1.5 text-xs font-bold text-cyan-100">Demo QA checklist</div>
       </div>
@@ -727,7 +727,7 @@ function DetectionReliabilityPanel() {
         })}
       </div>
       <div className="mt-4 rounded-2xl border border-sky-300/20 bg-sky-300/[0.07] p-4 text-sm leading-6 text-sky-100">
-        Recommended fixes: train with your actual aquarium videos, include negative samples with no fish, add classes for discoloration, lesions, fin damage, abnormal appearance, keep confidence threshold around 0.50-0.65 for demos, and log low-confidence frames for dataset improvement.
+        Recommended fixes: train with feeding-zone videos, include negative samples with empty water, keep pellets as the single class, maintain confidence threshold around 0.50-0.65 for demos, and log low-confidence frames for dataset improvement.
       </div>
     </div>
   );
@@ -761,8 +761,8 @@ function App() {
             <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-cyan-300/25 bg-cyan-300/10 px-4 py-2 text-sm font-medium text-cyan-100">
               <Zap className="size-4 text-cyan-300" /> Parallel and distributed computing prototype
             </div>
-            <h1 className="text-4xl font-bold tracking-tight text-white md:text-6xl">AquaScan monitoring system</h1>
-            <p className="mt-3 max-w-3xl text-slate-300">Demo aligned to the thesis scope: real-time aquarium video analysis, YOLOv8 fish health condition detection, ESP32 water quality monitoring, alert notifications, historical logs, and sensor-detection correlation.</p>
+            <h1 className="text-4xl font-bold tracking-tight text-white md:text-6xl">Tilapiers monitoring system</h1>
+            <p className="mt-3 max-w-3xl text-slate-300">Demo aligned to the thesis scope: YOLOv8 feed-pellet detection in the feeding zone, temperature and dissolved-oxygen safety gate, depletion-responsive feeding, SMS alerts, historical logs, and sensor-detection correlation.</p>
           </div>
           <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4 text-sm text-slate-300">
             <div className="font-semibold text-white">Future integration notes</div>

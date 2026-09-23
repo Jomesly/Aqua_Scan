@@ -1,3 +1,4 @@
+
 from ultralytics import YOLO
 from model_config import MODEL_PATH
 
@@ -6,6 +7,6 @@ if not MODEL_PATH.exists():
 
 model = YOLO(str(MODEL_PATH))
 
-print("AquaScan model loaded")
+print("Tilapiers model loaded")
 print(f"Path: {MODEL_PATH}")
 print(f"Classes: {model.names}")

@@ -9,10 +9,10 @@ results = model.train(
     epochs=50,                        # 50 rounds of training
     imgsz=640,                        # image size
     batch=8,                          # lower this to 4 if you get memory errors
-    name="aquascan_fish",             # folder name for results
+    name="tilapiers_fish",             # folder name for results
     patience=10,                      # stop early if no improvement
     device="cpu",                     # use "0" if you have an NVIDIA GPU
 )
 
 print("Training complete!")
-print("Best model saved at: runs/detect/aquascan_fish/weights/best.pt")
+print("Best model saved at: runs/detect/tilapiers_fish/weights/best.pt")
