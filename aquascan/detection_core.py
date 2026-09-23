@@ -1,3 +1,5 @@
+import time
+
 import cv2
 from ultralytics import YOLO
 
@@ -5,6 +7,7 @@ from model_config import (
     CAMERA_INDICES,
     CALIBRATION_PRESETS,
     CONFIDENCE_THRESHOLD,
+    DETECT_IMGSZ,
     DETECTION_CLASS_IDS,
     MAX_BOX_AREA_RATIO,
     MAX_BOX_ASPECT_RATIO,
@@ -13,6 +16,7 @@ from model_config import (
     MODEL_PATH,
     PERSON_CLASS_ID,
     PERSON_CONFIDENCE_THRESHOLD,
+    PERSON_IMGSZ,
     PERSON_MODEL_PATH,
     PERSON_SUPPRESSION_IOU,
 )
@@ -81,8 +85,9 @@ def open_camera(index=None):
             cap.release()
             continue
 
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 360)
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
         for _ in range(10):
             ret, frame = cap.read()
@@ -110,7 +115,15 @@ def parse_camera_source(source):
     return text
 
 
-def enumerate_camera_names():
+_camera_names_cache = {"names": {}, "at": 0.0}
+_CAMERA_NAMES_TTL = 4.0
+
+
+def enumerate_camera_names(force_refresh=False):
+    now = time.monotonic()
+    if not force_refresh and now - _camera_names_cache["at"] < _CAMERA_NAMES_TTL:
+        return dict(_camera_names_cache["names"])
+
     names = {}
     try:
         from pygrabber.dshow_graph import FilterGraph
@@ -119,12 +132,16 @@ def enumerate_camera_names():
             label = str(name).strip() or f"Camera {index}"
             names[index] = label
     except Exception:
-        pass
-    return names
+        if _camera_names_cache["at"] and not force_refresh:
+            return dict(_camera_names_cache["names"])
+
+    _camera_names_cache["names"] = names
+    _camera_names_cache["at"] = now
+    return dict(names)
 
 
 def list_cameras():
-    names = enumerate_camera_names()
+    names = enumerate_camera_names(force_refresh=True)
     if names:
         return [
             {"index": index, "label": name, "source": str(index)}
@@ -196,18 +213,21 @@ def box_center_inside(inner_box, outer_box):
     return ox1 <= cx <= ox2 and oy1 <= cy <= oy2
 
 
-def suppress_person_overlaps(frame, result, person_model):
-    if person_model is None or not len(result.boxes):
-        return result, 0
-
+def run_person_detection(frame, person_model):
+    if person_model is None:
+        return []
     person_results = person_model(
         frame,
         verbose=False,
         conf=PERSON_CONFIDENCE_THRESHOLD,
         classes=[PERSON_CLASS_ID],
+        imgsz=PERSON_IMGSZ,
     )
-    person_boxes = [box.xyxy[0].tolist() for box in person_results[0].boxes]
-    if not person_boxes:
+    return [box.xyxy[0].tolist() for box in person_results[0].boxes]
+
+
+def apply_person_suppression(result, person_boxes):
+    if not person_boxes or not len(result.boxes):
         return result, 0
 
     keep = []
@@ -228,17 +248,38 @@ def suppress_person_overlaps(frame, result, person_model):
     return result, suppressed
 
 
-def detect_fish(frame, model, calibration, person_model=None):
-    classes = DETECTION_CLASS_IDS
+def suppress_person_overlaps(frame, result, person_model, allow_run=True):
+    if person_model is None or not len(result.boxes) or not allow_run:
+        return result, 0
+    person_boxes = run_person_detection(frame, person_model)
+    return apply_person_suppression(result, person_boxes)
+
+
+def detect_fish(
+    frame,
+    model,
+    calibration,
+    person_model=None,
+    person_boxes=None,
+    refresh_person=False,
+):
     results = model(
         frame,
         verbose=False,
         conf=calibration.confidence,
-        classes=classes,
+        classes=DETECTION_CLASS_IDS,
+        imgsz=DETECT_IMGSZ,
     )
     result = filter_result(results[0], frame.shape, calibration)
-    result, suppressed = suppress_person_overlaps(frame, result, person_model)
+
+    if person_model is not None and refresh_person:
+        person_boxes = run_person_detection(frame, person_model)
+    elif person_boxes is None:
+        person_boxes = []
+
+    result, suppressed = apply_person_suppression(result, person_boxes)
     result.tilapiers_suppressed_people = suppressed
+    result.tilapiers_person_boxes = person_boxes
     return result
 
 

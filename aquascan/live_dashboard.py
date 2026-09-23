@@ -66,11 +66,12 @@ class CameraPowerUpdate(BaseModel):
 
 
 def update_metrics(metrics, status="streaming"):
+    label = camera_label(camera_source, camera_enabled)
     with state_lock:
         latest_metrics.update(metrics)
         latest_metrics["status"] = status
         latest_metrics["camera"] = camera_source
-        latest_metrics["camera_label"] = camera_label(camera_source, camera_enabled)
+        latest_metrics["camera_label"] = label
         latest_metrics["camera_enabled"] = camera_enabled
         latest_metrics["updated_at"] = time.strftime("%H:%M:%S")
 
@@ -110,13 +111,14 @@ def set_camera_source(source: str) -> str:
         if camera_enabled:
             last_source_before_off = normalized
         latest_metrics["camera"] = normalized
-        latest_metrics["camera_label"] = camera_label(normalized, camera_enabled)
-        latest_metrics["status"] = (
-            f"switching to {camera_label(normalized, camera_enabled)}"
-            if camera_enabled
-            else "camera off"
-        )
         latest_metrics["updated_at"] = time.strftime("%H:%M:%S")
+
+    label = camera_label(normalized, camera_enabled)
+    with state_lock:
+        latest_metrics["camera_label"] = label
+        latest_metrics["status"] = (
+            f"switching to {label}" if camera_enabled else "camera off"
+        )
     return normalized
 
 
@@ -126,14 +128,18 @@ def set_camera_enabled(enabled: bool) -> bool:
         camera_enabled = bool(enabled)
         if camera_enabled:
             camera_source = last_source_before_off or "auto"
-            status = f"switching to {camera_label(camera_source, True)}"
-            label = camera_label(camera_source, True)
         else:
             if camera_source not in {"off", "stop"}:
                 last_source_before_off = camera_source
-            status = "camera off"
-            label = "Off"
 
+    if camera_enabled:
+        label = camera_label(camera_source, True)
+        status = f"switching to {label}"
+    else:
+        label = "Off"
+        status = "camera off"
+
+    with state_lock:
         latest_metrics.update(dict(ZERO_METRICS))
         latest_metrics["camera"] = camera_source
         latest_metrics["camera_label"] = label
@@ -144,7 +150,7 @@ def set_camera_enabled(enabled: bool) -> bool:
 
 
 def jpeg_frame(frame):
-    ok, buffer = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 82])
+    ok, buffer = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 60])
     if not ok:
         return None
     return (
@@ -180,10 +186,31 @@ def black_placeholder_jpeg(message="Camera off"):
     return jpeg_frame(frame)
 
 
-def frame_stream():
+_latest_payload = None
+_latest_payload_lock = threading.Lock()
+_capture_state = {"running": False, "thread": None}
+
+
+def _publish_payload(payload):
+    global _latest_payload
+    if not payload:
+        return
+    with _latest_payload_lock:
+        _latest_payload = payload
+
+
+def _get_payload():
+    with _latest_payload_lock:
+        return _latest_payload
+
+
+def capture_worker():
     cap = None
     active_source = None
     active_enabled = None
+    last_metrics = dict(ZERO_METRICS)
+    person_boxes = []
+    person_due_at = 0.0
 
     try:
         while True:
@@ -195,14 +222,15 @@ def frame_stream():
                     cap = None
                 active_source = None
                 active_enabled = False
+                last_metrics = dict(ZERO_METRICS)
+                person_boxes = []
+                person_due_at = 0.0
                 update_metrics(dict(ZERO_METRICS), "camera off")
-                payload = black_placeholder_jpeg("Camera off")
-                if payload:
-                    yield payload
+                _publish_payload(black_placeholder_jpeg("Camera off"))
                 time.sleep(0.12)
                 continue
 
-            if active_enabled is False or desired_source != active_source:
+            if active_enabled is False or desired_source != active_source or cap is None:
                 if cap is not None:
                     cap.release()
                     cap = None
@@ -210,17 +238,21 @@ def frame_stream():
                 cap = open_camera(parse_camera_source(desired_source))
                 active_source = desired_source
                 active_enabled = True
+                last_metrics = dict(ZERO_METRICS)
+                person_boxes = []
+                person_due_at = 0.0
 
                 if cap is None:
                     update_metrics(
                         dict(ZERO_METRICS),
                         f"camera unavailable: {camera_label(desired_source, True)}",
                     )
-                    payload = black_placeholder_jpeg(
-                        f"Unavailable: {camera_label(desired_source, True)}"
+                    _publish_payload(
+                        black_placeholder_jpeg(
+                            f"Unavailable: {camera_label(desired_source, True)}"
+                        )
                     )
-                    if payload:
-                        yield payload
+                    active_source = None
                     time.sleep(1.0)
                     continue
 
@@ -236,19 +268,51 @@ def frame_stream():
                 time.sleep(1.0)
                 continue
 
+            now = time.monotonic()
+            refresh_person = now >= person_due_at
+
             with state_lock:
                 active_calibration = Calibration(**calibration.as_dict())
 
-            result = detect_fish(frame, model, active_calibration, person_model)
-            annotated, metrics = annotate_frame(frame, result, active_calibration)
-            update_metrics(metrics)
+            result = detect_fish(
+                frame,
+                model,
+                active_calibration,
+                person_model,
+                person_boxes=person_boxes,
+                refresh_person=refresh_person,
+            )
+            if refresh_person:
+                person_boxes = getattr(result, "tilapiers_person_boxes", person_boxes) or []
+                person_due_at = now + 0.5
 
-            payload = jpeg_frame(annotated)
-            if payload:
-                yield payload
+            annotated, last_metrics = annotate_frame(frame, result, active_calibration)
+            update_metrics(last_metrics)
+            _publish_payload(jpeg_frame(annotated))
     finally:
         if cap is not None:
             cap.release()
+
+
+def start_capture_worker():
+    if _capture_state["running"]:
+        return
+    thread = threading.Thread(target=capture_worker, daemon=True, name="tilapiers-capture")
+    _capture_state["thread"] = thread
+    _capture_state["running"] = True
+    thread.start()
+
+
+def frame_stream():
+    start_capture_worker()
+    last_payload = None
+    while True:
+        payload = _get_payload()
+        if payload is not None and payload is not last_payload:
+            last_payload = payload
+            yield payload
+        else:
+            time.sleep(0.01)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -321,7 +385,7 @@ def dashboard():
     <section class="grid">
       <div class="panel">
         <div class="stream-wrap">
-          <img class="stream" src="/stream" alt="Tilapiers live fish detection stream" />
+          <img class="stream" src="/stream" alt="Tilapiers live fish detection stream" decoding="async" />
           <div id="streamOff" class="stream-off">Camera off - no feed</div>
         </div>
       </div>
