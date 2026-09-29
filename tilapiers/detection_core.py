@@ -133,9 +133,13 @@ def enumerate_camera_names(force_refresh=False):
         for index, name in enumerate(FilterGraph().get_input_devices()):
             label = str(name).strip() or f"Camera {index}"
             names[index] = label
-    except Exception:
-        if _camera_names_cache["at"] and not force_refresh:
-            return dict(_camera_names_cache["names"])
+    except Exception as exc:
+        # Do not cache a failed scan, otherwise one bad call blanks the list.
+        print(f"Camera enumeration failed ({type(exc).__name__}: {exc})", flush=True)
+        return dict(_camera_names_cache["names"]) if _camera_names_cache["at"] else {}
+
+    if not names:
+        return dict(_camera_names_cache["names"]) if _camera_names_cache["at"] else {}
 
     _camera_names_cache["names"] = names
     _camera_names_cache["at"] = now
