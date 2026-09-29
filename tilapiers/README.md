@@ -27,16 +27,16 @@ Test the active model:
 - `live_dashboard.py` - browser dashboard with webcam stream, camera source settings, and calibration controls
 - `detection_core.py` - shared model loading, camera startup, filtering, and metrics
 - `model_config.py` - active model path and calibration presets
-- `../weights_updated/best.pt` - active trained model; live detection is pellets-only (`DETECTION_CLASS_IDS = [1]`)
+- `../weights_updated/best.pt` - active trained model; detects all 4 classes (`DETECTION_CLASS_IDS = None`)
 
 Model classes (case-sensitive keys in `model_config.CLASS_CALIBRATION`):
 
-| id | name |
-|----|------|
-| 0 | Bubbles |
-| 1 | Pellets |
-| 2 | Tilapia |
-| 3 | Waste |
+| id | name | box colour |
+|----|------|------------|
+| 0 | Bubbles | `#0072ff` |
+| 1 | Pellets | `#ff0000` |
+| 2 | Tilapia | `#00ffb6` |
+| 3 | Waste | `#ffffff` |
 
 ## Camera settings
 

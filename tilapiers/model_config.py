@@ -5,9 +5,17 @@ MODEL_PATH = ROOT_DIR.parent / "weights_updated" / "best.pt"
 PERSON_MODEL_PATH = ROOT_DIR / "yolov8n.pt"
 
 # weights_updated/best.pt classes: 0=Bubbles, 1=Pellets, 2=Tilapia, 3=Waste.
-# Live system tracks pellets only.
-PELLETS_CLASS_ID = 1
-DETECTION_CLASS_IDS = [PELLETS_CLASS_ID]
+# None = detect every class the model was trained on.
+DETECTION_CLASS_IDS = None
+
+# Bounding box colours per class (hex, converted to BGR for OpenCV).
+CLASS_COLORS = {
+    "Bubbles": "#0072ff",
+    "Pellets": "#ff0000",
+    "Tilapia": "#00ffb6",
+    "Waste": "#ffffff",
+}
+DEFAULT_BOX_COLOR = "#0072ff"
 PERSON_CLASS_ID = 0
 PERSON_CONFIDENCE_THRESHOLD = 0.35
 PERSON_SUPPRESSION_IOU = 0.1

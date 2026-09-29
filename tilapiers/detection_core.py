@@ -7,7 +7,9 @@ from model_config import (
     CAMERA_INDICES,
     CALIBRATION_PRESETS,
     CLASS_CALIBRATION,
+    CLASS_COLORS,
     CONFIDENCE_THRESHOLD,
+    DEFAULT_BOX_COLOR,
     DEFAULT_CLASS_RULE,
     DETECT_IMGSZ,
     DETECTION_CLASS_IDS,
@@ -343,8 +345,70 @@ def result_metrics(result):
     }
 
 
+def hex_to_bgr(hex_color):
+    value = str(hex_color).strip().lstrip("#")
+    if len(value) == 3:
+        value = "".join(ch * 2 for ch in value)
+    if len(value) != 6:
+        return (0, 200, 255)
+    try:
+        red = int(value[0:2], 16)
+        green = int(value[2:4], 16)
+        blue = int(value[4:6], 16)
+    except ValueError:
+        return (0, 200, 255)
+    return (blue, green, red)
+
+
+BOX_COLORS = {
+    name: hex_to_bgr(color) for name, color in CLASS_COLORS.items()
+}
+
+
+def box_color(class_name):
+    return BOX_COLORS.get(class_name, hex_to_bgr(DEFAULT_BOX_COLOR))
+
+
+def label_text_color(bgr):
+    blue, green, red = bgr
+    luminance = 0.299 * red + 0.587 * green + 0.114 * blue
+    return (0, 0, 0) if luminance > 140 else (255, 255, 255)
+
+
 def annotate_frame(frame, result, calibration):
-    annotated = result.plot()
+    annotated = frame.copy()
+    font = cv2.FONT_HERSHEY_SIMPLEX
+
+    for box in result.boxes:
+        class_id = int(box.cls[0])
+        class_name = result.names.get(class_id, str(class_id))
+        confidence = float(box.conf[0])
+        color = box_color(class_name)
+
+        x1, y1, x2, y2 = (int(round(v)) for v in box.xyxy[0].tolist())
+        cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
+
+        label = f"{class_name} {confidence:.2f}"
+        (text_w, text_h), baseline = cv2.getTextSize(label, font, 0.55, 2)
+        label_top = max(y1 - text_h - baseline - 8, 0)
+        cv2.rectangle(
+            annotated,
+            (x1, label_top),
+            (min(x1 + text_w + 10, annotated.shape[1] - 1), y1),
+            color,
+            -1,
+        )
+        cv2.putText(
+            annotated,
+            label,
+            (x1 + 5, max(y1 - baseline - 5, text_h + 3)),
+            font,
+            0.55,
+            label_text_color(color),
+            2,
+            cv2.LINE_AA,
+        )
+
     metrics = result_metrics(result)
     parts = [f"Detections: {metrics['count']}"]
     for name in sorted(metrics.get("class_counts", {})):
@@ -354,7 +418,7 @@ def annotate_frame(frame, result, calibration):
         annotated,
         " | ".join(parts),
         (10, 30),
-        cv2.FONT_HERSHEY_SIMPLEX,
+        font,
         0.7,
         (0, 200, 255),
         2,
