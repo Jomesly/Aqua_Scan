@@ -20,6 +20,8 @@ runs/
 **/runs/
 *.cache
 weights/last.pt
+weights_updated/last.pt
+weights_updated/*.onnx
 
 # Logs
 *.log

@@ -463,7 +463,7 @@ def dashboard():
           <button id="apply">Apply calibration</button>
         </div>
         <div class="card insight">
-          Start with Balanced. Live detection uses pellets only from weights/best.pt (model still has Tilapia/waste classes). Keep people out of frame to reduce false positives from skin/clothes.
+          Start with Balanced. Live detection uses pellets only from weights_updated/best.pt (model also has Bubbles/Tilapia/Waste classes). Keep people out of frame to reduce false positives from skin/clothes.
         </div>
       </aside>
     </section>
