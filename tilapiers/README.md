@@ -27,7 +27,7 @@ Test the active model:
 - `live_dashboard.py` - browser dashboard with webcam stream, camera source settings, and calibration controls
 - `detection_core.py` - shared model loading, camera startup, filtering, and metrics
 - `model_config.py` - active model path and calibration presets
-- `../weights_updated/best.pt` - active trained model; detects all 4 classes (`DETECTION_CLASS_IDS = None`)
+- `../Yolo_v8_OBB/best (1).pt` - active trained model; **oriented** (rotated) boxes, all 4 classes (`DETECTION_CLASS_IDS = None`, `IS_ORIENTED = True`)
 
 Model classes (case-sensitive keys in `model_config.CLASS_CALIBRATION`):
 

@@ -1,12 +1,14 @@
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parent
-MODEL_PATH = ROOT_DIR.parent / "weights_updated" / "best.pt"
+MODEL_PATH = ROOT_DIR.parent / "Yolo_v8_OBB" / "best (1).pt"
 PERSON_MODEL_PATH = ROOT_DIR / "yolov8n.pt"
 
-# weights_updated/best.pt classes: 0=Bubbles, 1=Pellets, 2=Tilapia, 3=Waste.
+# Yolo_v8_OBB/best (1).pt - task=obb (oriented boxes), yolov8s-obb, 100 epochs @ 640.
+# Classes: 0=Bubbles, 1=Pellets, 2=Tilapia, 3=Waste.
 # None = detect every class the model was trained on.
 DETECTION_CLASS_IDS = None
+IS_ORIENTED = True
 
 # Bounding box colours per class (hex, converted to BGR for OpenCV).
 CLASS_COLORS = {
@@ -20,7 +22,7 @@ PERSON_CLASS_ID = 0
 PERSON_CONFIDENCE_THRESHOLD = 0.35
 PERSON_SUPPRESSION_IOU = 0.1
 CONFIDENCE_THRESHOLD = 0.45
-DETECT_IMGSZ = 512
+DETECT_IMGSZ = 640
 PERSON_IMGSZ = 320
 MAX_BOX_AREA_RATIO = 0.65
 MIN_BOX_AREA_RATIO = 0.0005

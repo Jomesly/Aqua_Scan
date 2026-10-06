@@ -463,7 +463,7 @@ def dashboard():
           <button id="apply">Apply calibration</button>
         </div>
         <div class="card insight">
-          Start with Balanced. All 4 classes from weights_updated/best.pt are live: Bubbles (blue), Pellets (red), Tilapia (mint), Waste (white). Keep people out of frame to reduce false positives from skin/clothes.
+          Start with Balanced. All 4 classes from Yolo_v8_OBB/best (1).pt are live as rotated boxes: Bubbles (blue), Pellets (red), Tilapia (mint), Waste (white). Keep people out of frame to reduce false positives from skin/clothes.
         </div>
       </aside>
     </section>

@@ -1,6 +1,7 @@
 import time
 
 import cv2
+import numpy as np
 from ultralytics import YOLO
 
 from model_config import (
@@ -188,11 +189,38 @@ def inference_confidence(calibration):
     return min(confs)
 
 
+def predictions(result):
+    """Active prediction container: oriented boxes when present, else axis-aligned.
+
+    OBB models fill ``result.obb`` and leave ``result.boxes`` as None, so code that
+    only knew about ``.boxes`` would crash on an oriented model.
+    """
+    obb = getattr(result, "obb", None)
+    return obb if obb is not None else result.boxes
+
+
+def set_predictions(result, preds):
+    if getattr(result, "obb", None) is not None:
+        result.obb = preds
+    else:
+        result.boxes = preds
+
+
+def corner_points(pred):
+    """4 corner points of a prediction as an (4, 2) array, falling back to xyxy."""
+    corners = getattr(pred, "xyxyxyxy", None)
+    if corners is not None and len(corners):
+        return np.asarray(corners[0].tolist(), dtype=np.float64)
+    x1, y1, x2, y2 = pred.xyxy[0].tolist()
+    return np.asarray([[x1, y1], [x2, y1], [x2, y2], [x1, y2]], dtype=np.float64)
+
+
 def filter_result(result, frame_shape, calibration):
     frame_area = frame_shape[0] * frame_shape[1]
+    preds = predictions(result)
     keep = []
 
-    for index, box in enumerate(result.boxes):
+    for index, box in enumerate(preds):
         class_id = int(box.cls[0])
         class_name = result.names.get(class_id, str(class_id))
         conf = float(box.conf[0])
@@ -229,7 +257,7 @@ def filter_result(result, frame_shape, calibration):
 
         keep.append(index)
 
-    result.boxes = result.boxes[keep] if keep else result.boxes[:0]
+    set_predictions(result, preds[keep] if keep else preds[:0])
     return result
 
 
@@ -271,12 +299,13 @@ def run_person_detection(frame, person_model):
 
 
 def apply_person_suppression(result, person_boxes):
-    if not person_boxes or not len(result.boxes):
+    preds = predictions(result)
+    if not person_boxes or not len(preds):
         return result, 0
 
     keep = []
     suppressed = 0
-    for index, box in enumerate(result.boxes):
+    for index, box in enumerate(preds):
         candidate = box.xyxy[0].tolist()
         overlaps_person = any(
             box_iou(candidate, person_box) > PERSON_SUPPRESSION_IOU
@@ -288,12 +317,12 @@ def apply_person_suppression(result, person_boxes):
             continue
         keep.append(index)
 
-    result.boxes = result.boxes[keep] if keep else result.boxes[:0]
+    set_predictions(result, preds[keep] if keep else preds[:0])
     return result, suppressed
 
 
 def suppress_person_overlaps(frame, result, person_model, allow_run=True):
-    if person_model is None or not len(result.boxes) or not allow_run:
+    if person_model is None or not len(predictions(result)) or not allow_run:
         return result, 0
     person_boxes = run_person_detection(frame, person_model)
     return apply_person_suppression(result, person_boxes)
@@ -328,16 +357,17 @@ def detect_fish(
 
 
 def result_metrics(result):
-    confidences = [float(box.conf[0]) for box in result.boxes]
+    preds = predictions(result)
+    confidences = [float(box.conf[0]) for box in preds]
     class_counts = {}
 
-    for box in result.boxes:
+    for box in preds:
         class_id = int(box.cls[0])
         class_name = result.names.get(class_id, str(class_id))
         class_counts[class_name] = class_counts.get(class_name, 0) + 1
 
     return {
-        "count": len(result.boxes),
+        "count": len(preds),
         "max_confidence": max(confidences) if confidences else 0.0,
         "avg_confidence": sum(confidences) / len(confidences) if confidences else 0.0,
         "class_counts": class_counts,
@@ -378,15 +408,24 @@ def label_text_color(bgr):
 def annotate_frame(frame, result, calibration):
     annotated = frame.copy()
     font = cv2.FONT_HERSHEY_SIMPLEX
+    oriented = getattr(result, "obb", None) is not None
 
-    for box in result.boxes:
+    for box in predictions(result):
         class_id = int(box.cls[0])
         class_name = result.names.get(class_id, str(class_id))
         confidence = float(box.conf[0])
         color = box_color(class_name)
 
-        x1, y1, x2, y2 = (int(round(v)) for v in box.xyxy[0].tolist())
-        cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
+        corners = corner_points(box)
+        xs, ys = corners[:, 0], corners[:, 1]
+        x1, y1 = int(round(xs.min())), int(round(ys.min()))
+        x2, y2 = int(round(xs.max())), int(round(ys.max()))
+
+        if oriented:
+            poly = np.round(corners).astype(np.int32).reshape(-1, 1, 2)
+            cv2.polylines(annotated, [poly], True, color, 2, cv2.LINE_AA)
+        else:
+            cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
 
         label = f"{class_name} {confidence:.2f}"
         (text_w, text_h), baseline = cv2.getTextSize(label, font, 0.55, 2)
