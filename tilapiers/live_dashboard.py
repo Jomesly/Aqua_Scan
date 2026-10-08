@@ -17,6 +17,7 @@ from detection_core import (
     load_person_model,
     open_camera,
     parse_camera_source,
+    result_metrics,
 )
 from model_config import CAMERA_INDICES, MODEL_PATH
 
@@ -35,6 +36,8 @@ latest_metrics = {
     "avg_confidence": 0.0,
     "class_counts": {},
     "suppressed_people": 0,
+    "stream_fps": 0.0,
+    "detect_fps": 0.0,
     "status": "waiting for stream",
     "camera": "auto",
     "camera_label": "Auto",
@@ -47,6 +50,8 @@ ZERO_METRICS = {
     "avg_confidence": 0.0,
     "class_counts": {},
     "suppressed_people": 0,
+    "stream_fps": 0.0,
+    "detect_fps": 0.0,
 }
 
 
@@ -188,7 +193,11 @@ def black_placeholder_jpeg(message="Camera off"):
 
 _latest_payload = None
 _latest_payload_lock = threading.Lock()
-_capture_state = {"running": False, "thread": None}
+_capture_state = {"running": False, "threads": []}
+_shared = {"frame": None, "seq": 0}
+_shared_lock = threading.Lock()
+_detection_cache = {"result": None, "calibration": None}
+_detection_lock = threading.Lock()
 
 
 def _publish_payload(payload):
@@ -204,13 +213,59 @@ def _get_payload():
         return _latest_payload
 
 
+def _set_shared_frame(frame):
+    with _shared_lock:
+        _shared["frame"] = frame
+        _shared["seq"] += 1
+
+
+def _clear_shared_frame():
+    with _shared_lock:
+        _shared["frame"] = None
+        _shared["seq"] += 1
+
+
+def _get_shared_frame(last_seq):
+    with _shared_lock:
+        frame = _shared["frame"]
+        seq = _shared["seq"]
+    if frame is None or seq == last_seq:
+        return None, seq
+    return frame, seq
+
+
+class RateCounter:
+    """Tracks how many times it was ticked per second."""
+
+    def __init__(self):
+        self._count = 0
+        self._window = time.monotonic()
+        self.fps = 0.0
+
+    def tick(self):
+        self._count += 1
+        now = time.monotonic()
+        elapsed = now - self._window
+        if elapsed >= 1.0:
+            self.fps = self._count / elapsed
+            self._count = 0
+            self._window = now
+        return self.fps
+
+
+def update_detection_metrics(metrics, fps=0.0):
+    with state_lock:
+        for key, value in metrics.items():
+            latest_metrics[key] = value
+        latest_metrics["detect_fps"] = round(fps, 2)
+        latest_metrics["updated_at"] = time.strftime("%H:%M:%S")
+
+
 def capture_worker():
     cap = None
     active_source = None
     active_enabled = None
-    last_metrics = dict(ZERO_METRICS)
-    person_boxes = []
-    person_due_at = 0.0
+    stream_rate = RateCounter()
 
     try:
         while True:
@@ -222,9 +277,9 @@ def capture_worker():
                     cap = None
                 active_source = None
                 active_enabled = False
-                last_metrics = dict(ZERO_METRICS)
-                person_boxes = []
-                person_due_at = 0.0
+                _clear_shared_frame()
+                with _detection_lock:
+                    _detection_cache["result"] = None
                 update_metrics(dict(ZERO_METRICS), "camera off")
                 _publish_payload(black_placeholder_jpeg("Camera off"))
                 time.sleep(0.12)
@@ -238,9 +293,9 @@ def capture_worker():
                 cap = open_camera(parse_camera_source(desired_source))
                 active_source = desired_source
                 active_enabled = True
-                last_metrics = dict(ZERO_METRICS)
-                person_boxes = []
-                person_due_at = 0.0
+                _clear_shared_frame()
+                with _detection_lock:
+                    _detection_cache["result"] = None
 
                 if cap is None:
                     update_metrics(
@@ -261,12 +316,48 @@ def capture_worker():
             ret, frame = cap.read()
             if not ret:
                 update_metrics(dict(ZERO_METRICS), "frame read failed - retrying")
+                _clear_shared_frame()
                 if cap is not None:
                     cap.release()
                     cap = None
                 active_source = None
                 time.sleep(1.0)
                 continue
+
+            _set_shared_frame(frame.copy())
+
+            with _detection_lock:
+                cached_result = _detection_cache["result"]
+                cached_calibration = _detection_cache["calibration"]
+
+            if cached_result is not None:
+                annotated, _ = annotate_frame(frame, cached_result, cached_calibration)
+            else:
+                annotated = frame
+
+            _publish_payload(jpeg_frame(annotated))
+
+            fps = stream_rate.tick()
+            with state_lock:
+                latest_metrics["stream_fps"] = round(fps, 2)
+    finally:
+        if cap is not None:
+            cap.release()
+
+
+def inference_worker():
+    person_boxes = []
+    person_due_at = 0.0
+    last_seq = -1
+    infer_rate = RateCounter()
+
+    try:
+        while True:
+            frame, seq = _get_shared_frame(last_seq)
+            if frame is None:
+                time.sleep(0.02)
+                continue
+            last_seq = seq
 
             now = time.monotonic()
             refresh_person = now >= person_due_at
@@ -286,21 +377,26 @@ def capture_worker():
                 person_boxes = getattr(result, "tilapiers_person_boxes", person_boxes) or []
                 person_due_at = now + 0.5
 
-            annotated, last_metrics = annotate_frame(frame, result, active_calibration)
-            update_metrics(last_metrics)
-            _publish_payload(jpeg_frame(annotated))
+            with _detection_lock:
+                _detection_cache["result"] = result
+                _detection_cache["calibration"] = active_calibration
+
+            update_detection_metrics(result_metrics(result), infer_rate.tick())
     finally:
-        if cap is not None:
-            cap.release()
+        pass
 
 
 def start_capture_worker():
     if _capture_state["running"]:
         return
-    thread = threading.Thread(target=capture_worker, daemon=True, name="tilapiers-capture")
-    _capture_state["thread"] = thread
+    for target, name in (
+        (capture_worker, "tilapiers-capture"),
+        (inference_worker, "tilapiers-inference"),
+    ):
+        thread = threading.Thread(target=target, daemon=True, name=name)
+        _capture_state["threads"].append(thread)
+        thread.start()
     _capture_state["running"] = True
-    thread.start()
 
 
 def frame_stream():
@@ -407,6 +503,11 @@ def dashboard():
           <div id="confidence" class="value ok">0%</div>
         </div>
         <div class="card">
+          <div class="label">Frame rate</div>
+          <div id="fps" class="value ok">0.0 fps</div>
+          <div class="hint">Detection: <span id="detectFps" class="ok">0.0 fps</span></div>
+        </div>
+        <div class="card">
           <div class="label">Stream status</div>
           <div id="status" class="value warn" style="font-size: 22px;">starting</div>
           <div class="hint">Active camera: <span id="cameraLabel" class="ok">Auto</span></div>
@@ -511,6 +612,8 @@ def dashboard():
       $("confidence").textContent = pct(data.max_confidence || 0);
       $("status").textContent = data.status;
       $("suppressed").textContent = `${data.suppressed_people || 0} filtered`;
+      $("fps").textContent = `${Number(data.stream_fps || 0).toFixed(1)} fps`;
+      $("detectFps").textContent = `${Number(data.detect_fps || 0).toFixed(1)} fps`;
       $("modelName").textContent = data.model.name;
       $("modelClasses").textContent = data.model.classes.join(", ");
       const enabled = data.camera_enabled !== false;

@@ -73,6 +73,9 @@ def load_person_model():
     return YOLO(str(PERSON_MODEL_PATH))
 
 
+CAMERA_BACKENDS = (cv2.CAP_MSMF, cv2.CAP_DSHOW)
+
+
 def open_camera(index=None):
     indices = [index] if index is not None else list(CAMERA_INDICES)
 
@@ -85,22 +88,27 @@ def open_camera(index=None):
             cap.release()
             continue
 
-        cap = cv2.VideoCapture(int(device_index), cv2.CAP_DSHOW)
-        if not cap.isOpened():
+        for backend in CAMERA_BACKENDS:
+            cap = cv2.VideoCapture(int(device_index), backend)
+            if not cap.isOpened():
+                cap.release()
+                continue
+
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 360)
+            cap.set(cv2.CAP_PROP_FPS, 30)
+
+            for _ in range(10):
+                ret, frame = cap.read()
+                if ret and frame is not None:
+                    print(
+                        f"Using webcam index {device_index} "
+                        f"({cv2.videoio_registry.getBackendName(backend)}, "
+                        f"{cap.get(cv2.CAP_PROP_FPS):.0f} fps)"
+                    )
+                    return cap
+
             cap.release()
-            continue
-
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 360)
-        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-
-        for _ in range(10):
-            ret, frame = cap.read()
-            if ret and frame is not None:
-                print(f"Using webcam index {device_index}")
-                return cap
-
-        cap.release()
 
     return None
 
@@ -405,9 +413,7 @@ def label_text_color(bgr):
     return (0, 0, 0) if luminance > 140 else (255, 255, 255)
 
 
-def annotate_frame(frame, result, calibration):
-    annotated = frame.copy()
-    font = cv2.FONT_HERSHEY_SIMPLEX
+def draw_detections(frame, result, font=cv2.FONT_HERSHEY_SIMPLEX):
     oriented = getattr(result, "obb", None) is not None
 
     for box in predictions(result):
@@ -423,22 +429,22 @@ def annotate_frame(frame, result, calibration):
 
         if oriented:
             poly = np.round(corners).astype(np.int32).reshape(-1, 1, 2)
-            cv2.polylines(annotated, [poly], True, color, 2, cv2.LINE_AA)
+            cv2.polylines(frame, [poly], True, color, 2, cv2.LINE_AA)
         else:
-            cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
+            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
 
         label = f"{class_name} {confidence:.2f}"
         (text_w, text_h), baseline = cv2.getTextSize(label, font, 0.55, 2)
         label_top = max(y1 - text_h - baseline - 8, 0)
         cv2.rectangle(
-            annotated,
+            frame,
             (x1, label_top),
-            (min(x1 + text_w + 10, annotated.shape[1] - 1), y1),
+            (min(x1 + text_w + 10, frame.shape[1] - 1), y1),
             color,
             -1,
         )
         cv2.putText(
-            annotated,
+            frame,
             label,
             (x1 + 5, max(y1 - baseline - 5, text_h + 3)),
             font,
@@ -448,6 +454,12 @@ def annotate_frame(frame, result, calibration):
             cv2.LINE_AA,
         )
 
+    return frame
+
+
+def annotate_frame(frame, result, calibration):
+    annotated = draw_detections(frame.copy(), result)
+    font = cv2.FONT_HERSHEY_SIMPLEX
     metrics = result_metrics(result)
     parts = [f"Detections: {metrics['count']}"]
     for name in sorted(metrics.get("class_counts", {})):
