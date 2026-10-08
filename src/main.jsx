@@ -7,683 +7,530 @@ import {
   Camera,
   CheckCircle2,
   Clock3,
-  Eye,
   Fish,
   History,
-  Home,
-  Radio,
   Settings,
   ShieldAlert,
-  Smartphone,
   Waves,
-  Zap,
 } from 'lucide-react';
 import './styles.css';
+import { api, useTelemetry, useNow } from './api';
 
-const alerts = [
-  {
-    id: 'TL-2406-019',
-    time: '2026-06-13 09:42:18',
-    shortTime: '09:42',
-    species: 'Tilapia',
-    confidence: 94,
-    severity: 'Unsafe',
-    count: 0,
-    camera: 'Feeding Zone - Camera 01',
-    condition: 'Unsafe gate - feeding withheld',
-    note: 'DO 2.6 mg/L below 3 mg/L. SMS sent to caretaker registered number (thesis Table 1).',
-  },
-  {
-    id: 'TL-2406-018',
-    time: '2026-06-13 09:34:05',
-    shortTime: '09:34',
-    species: 'Pellets',
-    confidence: 88,
-    severity: 'Warning',
-    count: 6,
-    camera: 'Feeding Zone - Camera 03',
-    condition: 'Low depletion - session stopped',
-    note: 'R < 0.40. Remaining pellets logged as uneaten-feed alert.',
-  },
-  {
-    id: 'TL-2406-017',
-    time: '2026-06-13 09:21:44',
-    shortTime: '09:21',
-    species: 'Pellets',
-    confidence: 91,
-    severity: 'Normal',
-    count: 4,
-    camera: 'Feeding Zone - Camera 02',
-    condition: 'High depletion - full increment',
-    note: 'R ≥ 0.80. Next full increment (0.25 × D_ref) dispensed by actuator.',
-  },
-  {
-    id: 'TL-2406-016',
-    time: '2026-06-13 09:08:30',
-    shortTime: '09:08',
-    species: 'Tilapia',
-    confidence: 86,
-    severity: 'Normal',
-    count: 5,
-    camera: 'Feeding Zone - Camera 04',
-    condition: 'Safe gate - feeding recommended',
-    note: 'Temperature 27.4°C and DO 4.8 mg/L both inside Safe bands (Table 1).',
-  },
-];
+// Paper constants. Mirrors tilapiers/paper_config.py - the backend is the
+// authority at runtime, these are only the static thresholds shown in labels.
+const TEMP_BAND = { min: 25, max: 31, unit: '°C' };
+const DO_BAND = { min: 5, unit: 'mg/L' };
+const OBSERVATION_WINDOW = '5 min';
 
-const cameraTiles = [
-  { name: 'Feeding Zone - Cam 01', species: 'Pellets', confidence: 94, fish: 12, condition: 'R high - continue', accent: 'from-sky-500/30' },
-  { name: 'Feeding Zone - Cam 03', species: 'Pellets', confidence: 88, fish: 6, condition: 'R moderate - half dose', accent: 'from-cyan-500/25' },
-  { name: 'Feeding Zone - Cam 02', species: 'Pellets', confidence: 91, fish: 4, condition: 'R low - uneaten feed', accent: 'from-emerald-500/25' },
-  { name: 'Feeding Zone - Cam 04', species: 'Tilapia', confidence: 82, fish: 2, condition: 'gate Safe', accent: 'from-indigo-500/25' },
-];
-
-const waterSensors = [
-  {
-    name: 'Water Temperature',
-    value: '27.4',
-    unit: '°C',
-    status: 'Safe',
-    trend: 'Gate: 25°C ≤ T ≤ 31°C',
-    note: 'thesis Table 1',
-  },
-  {
-    name: 'Dissolved Oxygen',
-    value: '4.8',
-    unit: 'mg/L',
-    status: 'Safe',
-    trend: 'Gate: 3 ≤ DO ≤ 5 mg/L',
-    note: 'checked first (BFAR-NCR)',
-  },
-];
-
-const gateThresholds = {
-  temp: { min: 25, max: 31, unit: '°C' },
-  oxygen: { min: 3, max: 5, unit: 'mg/L' },
-};
-
-const feedingSession = {
-  dRef: '100%',
-  increment: '0.25 × D_ref',
-  observationWindow: '5 min',
-  dispensed: '37.5%',
-  ceiling: 'session cap = D_ref',
-  state: 'Safe - feeding permitted',
-};
-
-const depletionTiers = [
-  { rate: 'R ≥ 0.80', label: 'High depletion', action: 'Continue full increment', tone: 'high' },
+const DEPLETION_TIERS = [
+  { rate: 'R ≥ 0.80', label: 'High depletion', action: 'Continue: next full increment', tone: 'high' },
   { rate: '0.40 ≤ R < 0.80', label: 'Moderate depletion', action: 'Reduce: half increment', tone: 'mod' },
   { rate: 'R < 0.40', label: 'Low depletion', action: 'Stop + uneaten-feed alert', tone: 'low' },
 ];
 
-const detectionChecks = [
-  { label: 'Environmental gate', value: 'Safe', detail: 'Temp and DO both inside Table 1 bands', status: 'pass' },
-  { label: 'Feeding-zone ROI', value: 'Clear', detail: 'Fixed camera, feeding-zone region only', status: 'pass' },
-  { label: 'Pellet depletion (R)', value: '0.64', detail: 'Moderate → next half increment', status: 'warn' },
-  { label: 'Model confidence', value: '82-94%', detail: 'Low-confidence reads held (fail-safe)', status: 'warn' },
+const SESSION_STATUS = {
+  running: { label: 'Session running', tone: 'live' },
+  completed: { label: 'Completed', tone: 'ok' },
+  low_depletion_stop: { label: 'Ended: low-depletion stop', tone: 'low' },
+  session_cap_reached: { label: 'Ended: session cap reached', tone: 'ok' },
+  gate_halt: { label: 'Ended: gate halt', tone: 'bad' },
+  fail_safe: { label: 'Ended: fail-safe - no feeding action', tone: 'bad' },
+};
+
+const CLASSIFICATION_TONE = {
+  High: 'border-emerald-300/25 bg-emerald-300/[0.07] text-emerald-100',
+  Moderate: 'border-amber-300/25 bg-amber-300/[0.09] text-amber-100',
+  Low: 'border-red-300/30 bg-red-300/[0.09] text-red-100',
+};
+
+const SEVERITY_CLASS = {
+  critical: 'bg-red-500/15 text-red-300 ring-red-400/40',
+  warning: 'bg-amber-400/15 text-amber-200 ring-amber-300/40',
+  info: 'bg-emerald-400/15 text-emerald-200 ring-emerald-300/40',
+};
+
+const KIND_LABEL = {
+  unsafe_env: 'Unsafe environment',
+  uneaten_feed: 'Uneaten feed',
+  fail_safe: 'Fail-safe',
+  low_confidence: 'Low confidence',
+  rapid_depletion: 'Rapid depletion',
+  maintenance: 'Maintenance',
+};
+
+const FLAG_LABEL = {
+  p0_zero: 'P0 = 0 - no classification',
+  low_confidence: 'Low confidence - held',
+  rapid_depletion: 'Rapid depletion - review',
+};
+
+const DEFERRED_MODULES = [
+  'Authentication and role-based access',
+  'Profile management (add / archive staff, assign admin)',
+  'Backup and restore',
+  'FAQ',
+  'About us',
+  'WebSocket / MQTT transport (polling used for now)',
 ];
 
-const historyRecords = [
-  {
-    id: 'HIS-2406-033',
-    time: '2026-06-14 07:28:42',
-    species: 'Pellets',
-    condition: 'Unsafe gate - feeding withheld + SMS',
-    confidence: 95,
-    camera: 'Feeding Zone - Cam 01',
-    severity: 'Unsafe',
-    water: { temp: '32.1 °C', ph: '7.0', oxygen: '2.6 mg/L' },
-  },
-  {
-    id: 'HIS-2406-032',
-    time: '2026-06-14 03:12:09',
-    species: 'Pellets',
-    condition: 'Low depletion - uneaten-feed log',
-    confidence: 89,
-    camera: 'Feeding Zone - Cam 03',
-    severity: 'Warning',
-    water: { temp: '27.8 °C', ph: '7.4', oxygen: '5.0 mg/L' },
-  },
-  {
-    id: 'HIS-2406-031',
-    time: '2026-06-13 22:44:51',
-    species: 'Pellets',
-    condition: 'High depletion - full increment',
-    confidence: 92,
-    camera: 'Feeding Zone - Cam 02',
-    severity: 'Normal',
-    water: { temp: '26.9 °C', ph: '7.3', oxygen: '6.2 mg/L' },
-  },
-  {
-    id: 'HIS-2406-030',
-    time: '2026-06-13 15:36:18',
-    species: 'Pellets',
-    condition: 'Moderate depletion - half increment',
-    confidence: 87,
-    camera: 'Feeding Zone - Cam 04',
-    severity: 'Warning',
-    water: { temp: '29.0 °C', ph: '7.1', oxygen: '4.2 mg/L' },
-  },
-  {
-    id: 'HIS-2406-029',
-    time: '2026-06-13 08:05:27',
-    species: 'Tilapia',
-    condition: 'Safe gate - session started',
-    confidence: 91,
-    camera: 'Feeding Zone - Cam 01',
-    severity: 'Normal',
-    water: { temp: '27.2 °C', ph: '7.5', oxygen: '5.5 mg/L' },
-  },
-  {
-    id: 'HIS-2406-028',
-    time: '2026-06-12 18:49:03',
-    species: 'Waste',
-    condition: 'Uneaten feed flagged in ROI',
-    confidence: 93,
-    camera: 'Feeding Zone - Cam 02',
-    severity: 'Warning',
-    water: { temp: '28.6 °C', ph: '6.8', oxygen: '4.8 mg/L' },
-  },
-];
+function pad(value) {
+  return String(value).padStart(2, '0');
+}
 
-const timeline = [22, 18, 15, 14, 17, 26, 42, 58, 64, 73, 68, 71, 79, 86, 82, 91, 96, 88, 76, 62, 54, 47, 39, 31];
+function fmtDateTime(ms) {
+  if (!ms) return '—';
+  const d = new Date(ms);
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
 
-const correlationData = [
-  { hour: '00:00', detections: 18, oxygen: 4.9 },
-  { hour: '01:00', detections: 16, oxygen: 4.8 },
-  { hour: '02:00', detections: 14, oxygen: 4.7 },
-  { hour: '03:00', detections: 17, oxygen: 4.6 },
-  { hour: '04:00', detections: 21, oxygen: 4.5 },
-  { hour: '05:00', detections: 24, oxygen: 4.3 },
-  { hour: '06:00', detections: 28, oxygen: 4.0 },
-  { hour: '07:00', detections: 34, oxygen: 3.7 },
-  { hour: '08:00', detections: 45, oxygen: 3.4 },
-  { hour: '09:00', detections: 72, oxygen: 2.8 },
-  { hour: '10:00', detections: 68, oxygen: 3.2 },
-  { hour: '11:00', detections: 54, oxygen: 3.6 },
-];
+function fmtTime(ms) {
+  if (!ms) return '—';
+  const d = new Date(ms);
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function fmtCountdown(ms) {
+  if (ms == null) return '—';
+  if (ms <= 0) return 'now';
+  const total = Math.floor(ms / 1000);
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const seconds = total % 60;
+  if (hours > 0) return `${hours}h ${pad(minutes)}m`;
+  if (minutes > 0) return `${minutes}m ${pad(seconds)}s`;
+  return `${seconds}s`;
+}
+
+function fmtRate(rate) {
+  return rate == null ? '—' : rate.toFixed(2);
+}
 
 function severityClass(severity) {
-  if (severity === 'Critical' || severity === 'Unsafe') return 'bg-red-500/15 text-red-300 ring-red-400/40';
-  if (severity === 'Warning') return 'bg-amber-400/15 text-amber-200 ring-amber-300/40';
-  return 'bg-emerald-400/15 text-emerald-200 ring-emerald-300/40';
+  return SEVERITY_CLASS[severity] || SEVERITY_CLASS.info;
 }
 
-function mobileSeverityClass(severity) {
-  if (severity === 'Critical' || severity === 'Unsafe') return 'bg-red-100 text-red-700';
-  if (severity === 'Warning') return 'bg-amber-100 text-amber-700';
-  return 'bg-emerald-100 text-emerald-700';
+function alertSeverityLabel(severity) {
+  if (severity === 'critical') return 'Unsafe';
+  if (severity === 'warning') return 'Warning';
+  return 'Info';
 }
 
-function dashboardSensorBadgeClass(status) {
-  if (status === 'Unsafe' || status === 'Critical') return 'bg-red-500/15 text-red-200 ring-red-400/40';
-  if (status === 'Warning') return 'bg-amber-400/15 text-amber-200 ring-amber-300/40';
-  return 'bg-emerald-400/15 text-emerald-200 ring-emerald-300/40';
+function gateStatusClass(pass) {
+  return pass
+    ? 'bg-emerald-400/15 text-emerald-200 ring-emerald-300/40'
+    : 'bg-red-500/15 text-red-200 ring-red-400/40';
 }
 
 function openLiveDashboard() {
-  window.open('http://127.0.0.1:8000/', '_blank', 'noopener,noreferrer');
+  api.openLiveDashboard();
 }
 
-function AquaLogo({ compact = false }) {
+function SimulatedBadge() {
+  return (
+    <span className="rounded-full bg-sky-400/15 px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.14em] text-sky-200 ring-1 ring-sky-300/40">
+      Simulated
+    </span>
+  );
+}
+
+function SeedBadge() {
+  return (
+    <span className="rounded-full bg-slate-400/15 px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.14em] text-slate-300 ring-1 ring-slate-300/30">
+      Seed
+    </span>
+  );
+}
+
+function TestBadge() {
+  return (
+    <span className="rounded-full bg-violet-400/15 px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.14em] text-violet-200 ring-1 ring-violet-300/40">
+      Test trigger
+    </span>
+  );
+}
+
+function AquaLogo() {
   return (
     <div className="flex items-center gap-3">
       <div className="grid size-11 place-items-center rounded-2xl bg-sky-500/15 ring-1 ring-sky-400/35">
         <Fish className="size-6 text-cyan-300" />
       </div>
-      {!compact && (
-        <div>
-          <div className="text-xl font-semibold tracking-tight text-white">Tilapiers</div>
-          <div className="text-xs uppercase tracking-[0.28em] text-slate-400">Pellet detection and feeding</div>
-        </div>
-      )}
+      <div>
+        <div className="text-xl font-semibold tracking-tight text-white">Tilapiers</div>
+        <div className="text-xs uppercase tracking-[0.28em] text-slate-400">Pellet detection and feeding</div>
+      </div>
     </div>
   );
 }
 
-function SimulatedFeed({ compact = false, tile }) {
+function LiveCameraTile({ status, pellets, total }) {
+  const on = status?.camera_enabled !== false && !!status?.status;
+  const confidence = status?.avg_confidence != null
+    ? Math.round(status.avg_confidence * 100)
+    : null;
+
   return (
-    <div className={`relative overflow-hidden rounded-[1.7rem] border border-white/10 bg-slate-950 shadow-2xl ${compact ? 'min-h-44' : 'min-h-72'}`}>
-      <div className={`absolute inset-0 bg-gradient-to-br ${tile?.accent || 'from-sky-500/25'} via-slate-900 to-slate-950`} />
+    <div className="relative min-h-44 overflow-hidden rounded-[1.7rem] border border-white/10 bg-slate-950 shadow-2xl">
+      <div className="absolute inset-0 bg-gradient-to-br from-sky-500/25 via-slate-900 to-slate-950" />
       <div className="absolute inset-0 opacity-35 [background-image:radial-gradient(circle_at_25%_30%,#67e8f9_0,transparent_28%),radial-gradient(circle_at_78%_65%,#0ea5e9_0,transparent_24%)]" />
       <div className="absolute inset-x-0 bottom-0 h-28 bg-[repeating-linear-gradient(170deg,transparent_0_16px,rgba(6,182,212,.16)_17px_19px)]" />
       <div className="absolute left-[19%] top-[32%] h-[30%] w-[46%] rounded-[45%] border-2 border-cyan-300 shadow-[0_0_28px_rgba(6,182,212,.35)]" />
       <div className="absolute left-[23%] top-[39%] h-5 w-20 rounded-full bg-cyan-200/70 blur-sm" />
       <div className="absolute left-[57%] top-[36%] h-[25%] w-[25%] rounded-[45%] border-2 border-sky-300" />
       <div className="absolute left-[18%] top-[25%] rounded-full bg-cyan-300 px-2.5 py-1 text-[11px] font-semibold text-slate-950 shadow-lg">
-        {tile ? `${tile.species} ${tile.confidence}% - ${tile.condition}` : 'Pellets detected - 12 in ROI (94% confidence)'}
+        {on
+          ? `${pellets} pellets${confidence != null ? ` - ${confidence}% avg confidence` : ''}`
+          : 'Camera off - no pellet count'}
       </div>
       <div className="absolute right-4 top-4 flex items-center gap-2 rounded-full bg-slate-950/70 px-3 py-1.5 text-xs font-medium text-cyan-100 backdrop-blur">
-        <span className="size-2 rounded-full bg-emerald-400 shadow-[0_0_12px_#22c55e]" /> Live
+        <span className={`size-2 rounded-full ${on ? 'bg-emerald-400 shadow-[0_0_14px_#22c55e]' : 'bg-slate-500'}`} />
+        {on ? 'Live' : 'Off'}
       </div>
       <div className="absolute bottom-4 left-4 right-4 flex items-center justify-between rounded-2xl bg-slate-950/70 px-4 py-3 text-sm text-white backdrop-blur">
-        <span>{tile?.name || 'Feeding Zone - Camera 01'}</span>
-        <span className="text-cyan-200">YOLOv8n - {tile?.fish || 12} pellets</span>
+        <span>{status?.camera_label || 'Camera'}</span>
+        <span className="text-cyan-200">YOLOv8 - {pellets} counted / {total} detected</span>
       </div>
     </div>
   );
 }
 
-function MobileHome({ activeScreen = 'Home', onScreenChange }) {
+function StatCard({ icon, label, value, sub, warn = false, badge = null }) {
   return (
-    <section className="flex h-full flex-col bg-slate-50">
-      <div className="bg-gradient-to-br from-sky-500 to-cyan-500 px-5 pb-7 pt-6 text-white">
-        <div className="flex items-center justify-between">
-          <div>
-            <div className="text-sm text-sky-100">Tilapiers Mobile</div>
-            <h2 className="text-2xl font-semibold">Live camera feed</h2>
-          </div>
-          <div className="grid size-11 place-items-center rounded-full bg-white/18">
-            <Camera className="size-5" />
-          </div>
+    <div className="rounded-3xl border border-white/10 bg-white/[0.04] p-4">
+      <div className="mb-5 flex items-start justify-between">
+        <div className={`grid size-11 place-items-center rounded-2xl ${warn ? 'bg-red-500/15 text-red-300' : 'bg-sky-500/15 text-cyan-300'}`}>
+          {React.cloneElement(icon, { className: 'size-5' })}
         </div>
+        {badge}
       </div>
-      <div className="-mt-4 flex-1 px-4 pb-3">
-        <div className="relative">
-          <SimulatedFeed />
-          <div className="absolute -top-3 left-5 flex items-center gap-2 rounded-full bg-white px-3 py-2 text-xs font-semibold text-slate-700 shadow-xl ring-1 ring-slate-200">
-            <span className="size-2 rounded-full bg-emerald-500" /> AI active - 12 pellets detected
-          </div>
-        </div>
-        <div className="mt-4 grid grid-cols-2 gap-3">
-          <InfoPill icon={<Activity />} label="Env gate" value="Safe - Temp + DO" />
-          <InfoPill icon={<Radio />} label="Live stream" value="MJPEG /stream" />
-        </div>
-        <MobileSensorStrip />
-      </div>
-      <MobileNav active={activeScreen} onSelect={onScreenChange} />
-    </section>
-  );
-}
-
-function MobileSensorStrip() {
-  return (
-    <div className="mt-4">
-      <div className="mb-2 flex items-center justify-between px-1">
-        <div className="text-xs font-bold uppercase tracking-[0.18em] text-slate-500">ESP32 sensors - live</div>
-        <Waves className="size-4 text-sky-500" />
-      </div>
-      <div className="-mx-4 flex gap-3 overflow-x-auto px-4 pb-2">
-        {waterSensors.map((sensor) => (
-          <article key={sensor.name} className="min-w-[145px] rounded-2xl bg-white p-3 shadow-sm ring-1 ring-slate-200">
-            <div className="text-xs font-medium text-slate-500">{sensor.name}</div>
-            <div className="mt-2 flex items-baseline gap-1">
-              <span className="text-2xl font-bold text-slate-950">{sensor.value}</span>
-              {sensor.unit && <span className="text-xs font-semibold text-slate-500">{sensor.unit}</span>}
-            </div>
-            <span className={`mt-3 inline-flex rounded-full px-2.5 py-1 text-[11px] font-bold ${mobileSeverityClass(sensor.status)}`}>
-              {sensor.status}{sensor.note ? ` - ${sensor.note}` : ''}
-            </span>
-          </article>
-        ))}
-      </div>
+      <div className="text-sm text-slate-400">{label}</div>
+      <div className="mt-1 text-3xl font-bold text-white">{value}</div>
+      <div className={`mt-2 text-xs ${warn ? 'text-red-200' : 'text-emerald-200'}`}>{sub}</div>
     </div>
   );
 }
 
-function InfoPill({ icon, label, value }) {
-  return (
-    <div className="rounded-2xl bg-white p-3 shadow-sm ring-1 ring-slate-200">
-      <div className="mb-2 text-sky-500 [&_svg]:size-4">{icon}</div>
-      <div className="text-xs text-slate-500">{label}</div>
-      <div className="text-sm font-semibold text-slate-900">{value}</div>
-    </div>
-  );
-}
-
-function MobileAlerts({ activeScreen = 'Alerts', onScreenChange }) {
-  return (
-    <section className="flex h-full flex-col bg-slate-50">
-      <div className="px-5 pb-3 pt-6">
-        <div className="text-sm font-medium text-sky-600">Firebase Cloud Messaging</div>
-        <h2 className="text-2xl font-semibold text-slate-950">Feeding alerts</h2>
-      </div>
-      <div className="flex-1 space-y-3 overflow-hidden px-4">
-        {alerts.slice(0, 3).map((alert) => (
-          <article key={alert.id} className="rounded-3xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <div className="text-xs text-slate-500">{alert.time}</div>
-                <div className="mt-1 text-lg font-semibold text-slate-950">{alert.species}</div>
-              </div>
-              <span className={`rounded-full px-2.5 py-1 text-xs font-bold ${mobileSeverityClass(alert.severity)}`}>{alert.severity}</span>
-            </div>
-            <div className="mt-3 flex items-center justify-between text-sm text-slate-600">
-              <span>{alert.confidence}% confidence</span>
-              <span>{alert.condition}</span>
-            </div>
-            <button className="mt-4 flex w-full items-center justify-center gap-2 rounded-2xl bg-sky-500 px-4 py-3 text-sm font-semibold text-white shadow-lg shadow-sky-500/20">
-              <Eye className="size-4" /> View footage
-            </button>
-          </article>
-        ))}
-      </div>
-      <MobileNav active={activeScreen} onSelect={onScreenChange} />
-    </section>
-  );
-}
-
-function MobileHistory({ activeScreen = 'History', onScreenChange }) {
-  return (
-    <section className="flex h-full flex-col bg-slate-50">
-      <div className="px-5 pb-3 pt-6">
-        <div className="text-sm font-medium text-sky-600">Detection archive</div>
-        <h2 className="text-2xl font-semibold text-slate-950">History</h2>
-      </div>
-      <div className="flex-1 space-y-3 overflow-y-auto px-4 pb-3">
-        {historyRecords.map((record) => (
-          <article key={record.id} className="rounded-3xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <div className="text-xs text-slate-500">{record.time}</div>
-                <div className="mt-1 text-lg font-semibold leading-tight text-slate-950">{record.species}</div>
-                <div className="mt-1 text-sm leading-5 text-slate-600">{record.condition}</div>
-              </div>
-              <span className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-bold ${mobileSeverityClass(record.severity)}`}>{record.severity}</span>
-            </div>
-            <div className="mt-3 flex items-center justify-between gap-3 text-sm text-slate-600">
-              <span className="font-semibold text-slate-800">{record.confidence}% confidence</span>
-              <span className="text-right text-xs">{record.camera}</span>
-            </div>
-            <div className="mt-3 flex flex-wrap gap-2">
-              <WaterChip label="Temp" value={record.water.temp} />
-              <WaterChip label="DO" value={record.water.oxygen} />
-            </div>
-          </article>
-        ))}
-      </div>
-      <MobileNav active={activeScreen} onSelect={onScreenChange} />
-    </section>
-  );
-}
-
-function WaterChip({ label, value }) {
-  return (
-    <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-semibold text-slate-700 ring-1 ring-slate-200">
-      <span className="text-slate-500">{label}</span>
-      {value}
-    </span>
-  );
-}
-
-function MobileSettings({ activeScreen = 'Settings', onScreenChange }) {
-  return (
-    <section className="flex h-full flex-col bg-slate-50">
-      <div className="px-5 pb-3 pt-6">
-        <div className="text-sm font-medium text-sky-600">Device controls</div>
-        <h2 className="text-2xl font-semibold text-slate-950">Settings</h2>
-      </div>
-      <div className="flex-1 space-y-3 px-4">
-        {[
-          ['Camera sync', '4 feeds online'],
-          ['ESP32 telemetry', 'Live sensor polling'],
-          ['Alert delivery', 'Firebase notifications enabled'],
-        ].map(([label, value]) => (
-          <article key={label} className="rounded-3xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
-            <div className="text-sm font-semibold text-slate-950">{label}</div>
-            <div className="mt-1 text-sm text-slate-500">{value}</div>
-          </article>
-        ))}
-      </div>
-      <MobileNav active={activeScreen} onSelect={onScreenChange} />
-    </section>
-  );
-}
-
-function MobileDetail({ onScreenChange }) {
-  const alert = alerts[0];
-  return (
-    <section className="flex h-full flex-col bg-slate-950 text-white">
-      <div className="px-5 pb-4 pt-6">
-        <div className="flex items-center justify-between">
-          <div>
-            <div className="text-sm text-red-200">Notification detail</div>
-            <h2 className="text-2xl font-semibold">Critical alert</h2>
-          </div>
-          <ShieldAlert className="size-8 text-red-300" />
-        </div>
-      </div>
-      <div className="flex-1 px-4">
-        <SimulatedFeed compact />
-        <div className="mt-4 rounded-3xl bg-white p-4 text-slate-950">
-          <div className="flex items-center justify-between">
-            <div>
-              <div className="text-xs text-slate-500">{alert.id}</div>
-              <div className="text-xl font-bold">{alert.species} alert</div>
-            </div>
-            <span className={`rounded-full bg-red-100 px-3 py-1 text-xs font-bold text-red-700`}>{alert.severity}</span>
-          </div>
-          <div className="mt-4 grid grid-cols-3 gap-2 text-center">
-            <Metric label="Fish count" value={alert.count} />
-            <Metric label="Confidence" value={`${alert.confidence}%`} />
-            <Metric label="Time" value={alert.shortTime} />
-          </div>
-          <p className="mt-4 text-sm leading-6 text-slate-600">{alert.note} Snapshot recorded from {alert.camera} and queued for thesis demo review.</p>
-        </div>
-      </div>
-      <div className="grid grid-cols-2 gap-3 p-4">
-        <button className="rounded-2xl bg-white px-4 py-3 text-sm font-bold text-slate-950">Mark as resolved</button>
-        <button className="rounded-2xl bg-red-500 px-4 py-3 text-sm font-bold text-white">Escalate</button>
-      </div>
-    </section>
-  );
-}
-
-function Metric({ label, value }) {
-  return (
-    <div className="rounded-2xl bg-slate-100 px-2 py-3">
-      <div className="text-lg font-bold text-slate-950">{value}</div>
-      <div className="text-[11px] text-slate-500">{label}</div>
-    </div>
-  );
-}
-
-function MobileNav({ active, onSelect }) {
-  const items = [
-    ['Home', Home],
-    ['Alerts', Bell],
-    ['History', History],
-    ['Settings', Settings],
-  ];
-  return (
-    <nav className="grid grid-cols-4 border-t border-slate-200 bg-white px-2 py-2">
-      {items.map(([label, Icon]) => (
-        <button key={label} type="button" onClick={() => onSelect?.(label)} className={`flex flex-col items-center gap-1 rounded-2xl py-2 text-[11px] font-medium ${active === label ? 'bg-sky-50 text-sky-600' : 'text-slate-500'}`}>
-          <Icon className="size-5" />
-          {label}
-        </button>
-      ))}
-    </nav>
-  );
-}
-
-function PhoneFrame({ title, children }) {
-  return (
-    <div className="w-full max-w-[360px]">
-      <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-300">
-        <Smartphone className="size-4 text-cyan-300" /> {title}
-      </div>
-      <div className="h-[720px] overflow-hidden rounded-[2.5rem] border-8 border-slate-800 bg-white shadow-2xl shadow-sky-950/50 ring-1 ring-white/10">
-        {children}
-      </div>
-    </div>
-  );
-}
-
-function Dashboard() {
-  return (
-    <section className="min-w-[980px] flex-1 rounded-[2rem] border border-white/10 bg-slate-900/80 p-6 shadow-2xl shadow-sky-950/40 backdrop-blur">
-      <header className="flex items-center justify-between">
-        <AquaLogo />
-        <div className="flex items-center gap-3">
-          <div className="rounded-full border border-emerald-400/30 bg-emerald-400/10 px-4 py-2 text-sm font-semibold text-emerald-200">
-            <span className="mr-2 inline-block size-2 rounded-full bg-emerald-400 shadow-[0_0_14px_#22c55e]" /> Gate Safe - feeding permitted
-          </div>
-          <button
-            type="button"
-            onClick={openLiveDashboard}
-            className="inline-flex items-center gap-2 rounded-full border border-cyan-300/40 bg-cyan-400/15 px-4 py-2 text-sm font-bold text-cyan-100 transition hover:bg-cyan-400/25 hover:text-white"
-            title="Open live camera dashboard with YOLOv8 stream"
-          >
-            <Camera className="size-4" />
-            Open Live Camera
-          </button>
-        </div>
-      </header>
-
-      <div className="mt-6 grid grid-cols-4 gap-4">
-        <StatCard icon={<Fish />} label="Pellet detections today" value="1,284" trend="Feeding-zone ROI only" />
-        <StatCard icon={<AlertTriangle />} label="Unsafe / SMS alerts" value="7" trend="2 need review" warn />
-        <StatCard icon={<Camera />} label="Camera feeds online" value="4 / 4" trend="Feeding-zone cameras" />
-        <StatCard icon={<Clock3 />} label="Observation window" value="5 min" trend="Per increment (thesis)" />
-      </div>
-
-      <DashboardSensorRow />
-      <EnvironmentGatePanel />
-      <DepletionDecisionPanel />
-
-      <div className="mt-6 grid grid-cols-[1fr_320px] gap-5">
-        <main className="space-y-5">
-          <div className="rounded-3xl border border-white/10 bg-slate-950/45 p-4">
-            <div className="mb-4 flex items-center justify-between">
-              <div>
-                <h3 className="text-lg font-semibold text-white">Feeding-zone live grid (simulated)</h3>
-                <p className="text-sm text-slate-400">YOLOv8 pellet counts in ROI - real camera opens via Live Camera button</p>
-              </div>
-              <button
-                type="button"
-                onClick={openLiveDashboard}
-                className="inline-flex items-center gap-2 rounded-full border border-cyan-300/30 bg-cyan-300/10 px-3 py-1.5 text-xs font-bold text-cyan-100 hover:bg-cyan-300/20"
-              >
-                <Camera className="size-3.5" /> Stream
-              </button>
-            </div>
-            <div className="grid grid-cols-2 gap-4">
-              {cameraTiles.map((tile) => (
-                <SimulatedFeed key={tile.name} compact tile={tile} />
-              ))}
-            </div>
-          </div>
-          <TimelineChart />
-          <CorrelationPanel />
-          <DetectionReliabilityPanel />
-        </main>
-        <aside className="rounded-3xl border border-white/10 bg-slate-950/60 p-4">
-          <div className="mb-4 flex items-center justify-between">
-            <div>
-              <h3 className="text-lg font-semibold text-white">SMS / feeding alerts</h3>
-              <p className="text-sm text-slate-400">Unsafe gate + uneaten-feed events</p>
-            </div>
-            <Bell className="size-5 text-cyan-300" />
-          </div>
-          <div className="max-h-[568px] space-y-3 overflow-y-auto pr-1">
-            {[...alerts, ...alerts.slice(1, 4)].map((alert, index) => (
-              <article key={`${alert.id}-${index}`} className="rounded-2xl border border-white/10 bg-white/[0.04] p-3">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="font-semibold text-white">{alert.shortTime}</span>
-                  <span className={`rounded-full px-2 py-1 text-[11px] font-bold ring-1 ${severityClass(alert.severity)}`}>{alert.severity}</span>
-                </div>
-                <div className="mt-2 text-sm text-slate-300">{alert.species} - {alert.confidence}% confidence</div>
-                <div className="mt-1 text-xs text-slate-500">{alert.camera}</div>
-                <div className="mt-1 text-xs leading-4 text-slate-500">{alert.condition}</div>
-              </article>
-            ))}
-          </div>
-        </aside>
-      </div>
-    </section>
-  );
-}
-
-function EnvironmentGatePanel() {
-  const safe = waterSensors.every((sensor) => sensor.status === 'Safe');
-
-  return (
-    <div className={`mt-6 rounded-3xl border p-4 ${safe ? 'border-emerald-300/25 bg-emerald-300/[0.06]' : 'border-red-300/30 bg-red-300/[0.08]'}`}>
-      <div className="mb-4 flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <h3 className="text-lg font-semibold text-white">Environmental verification gate (Table 1)</h3>
-          <p className="text-sm text-slate-400">
-            Binary Safe/Unsafe - both temperature and dissolved oxygen must pass. pH / turbidity / ammonia are outside feeding-gate scope (thesis delimitations).
-          </p>
-        </div>
-        <span className={`rounded-full px-4 py-2 text-sm font-bold ring-1 ${safe ? 'bg-emerald-400/15 text-emerald-200 ring-emerald-300/40' : 'bg-red-500/15 text-red-200 ring-red-400/40'}`}>
-          {safe ? 'Safe - incremental feeding' : 'Unsafe - withhold + SMS'}
-        </span>
-      </div>
-      <div className="grid grid-cols-3 gap-3">
-        <GateCard
-          label="Temperature"
-          value="27.4 °C"
-          band={`${gateThresholds.temp.min}–${gateThresholds.temp.max} °C`}
-          pass
-        />
-        <GateCard
-          label="Dissolved oxygen"
-          value="4.8 mg/L"
-          band={`${gateThresholds.oxygen.min}–${gateThresholds.oxygen.max} mg/L`}
-          pass
-        />
-        <GateCard
-          label="Gate decision"
-          value="Safe"
-          band="Both parameters in band"
-          pass
-        />
-      </div>
-      <div className="mt-4 grid grid-cols-2 gap-3 text-xs leading-5 text-slate-300">
-        <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-3">
-          <span className="font-bold text-emerald-200">Safe:</span> 25 °C ≤ T ≤ 31 °C and 3 ≤ DO ≤ 5 mg/L → feeding recommended; increments gated by depletion.
-        </div>
-        <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-3">
-          <span className="font-bold text-red-200">Unsafe:</span> T &lt; 25 or T &gt; 31, or DO &lt; 3 mg/L → withhold feed; SMS to caretaker mobile.
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function GateCard({ label, value, band, pass }) {
+function GateCard({ label, value, band, pass, note, badge = null }) {
   return (
     <article className={`rounded-2xl border p-3 ${pass ? 'border-emerald-300/20 bg-emerald-300/[0.05]' : 'border-red-300/30 bg-red-300/[0.07]'}`}>
-      <div className="text-xs text-slate-400">{label}</div>
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-xs text-slate-400">{label}</div>
+        {badge}
+      </div>
       <div className={`mt-1 text-2xl font-bold ${pass ? 'text-emerald-100' : 'text-red-100'}`}>{value}</div>
       <div className="mt-2 text-[11px] text-slate-500">{band}</div>
+      {note && <div className="mt-1 text-[11px] text-slate-400">{note}</div>}
     </article>
   );
 }
 
-function DepletionDecisionPanel() {
-  const toneClass = {
-    high: 'border-emerald-300/25 bg-emerald-300/[0.06]',
-    mod: 'border-amber-300/25 bg-amber-300/[0.08]',
-    low: 'border-red-300/30 bg-red-300/[0.08]',
-  };
+function SectionHeader({ icon, title, subtitle, right = null }) {
+  return (
+    <div className="mb-4 flex flex-wrap items-start justify-between gap-4">
+      <div className="flex items-start gap-3">
+        <div className="grid size-9 shrink-0 place-items-center rounded-xl bg-cyan-400/10 text-cyan-300">
+          {React.cloneElement(icon, { className: 'size-5' })}
+        </div>
+        <div>
+          <h3 className="text-lg font-semibold text-white">{title}</h3>
+          <p className="text-sm text-slate-400">{subtitle}</p>
+        </div>
+      </div>
+      {right}
+    </div>
+  );
+}
+
+function EnvironmentGatePanel({ environment, schedule }) {
+  const env = environment || {};
+  const thresholds = env.thresholds || { temp_min_c: TEMP_BAND.min, temp_max_c: TEMP_BAND.max, do_min_mg: DO_BAND.min };
+  const safe = env.gate_state === 'Safe';
+  const tempPass = env.temperature_c != null
+    && env.temperature_c >= thresholds.temp_min_c
+    && env.temperature_c <= thresholds.temp_max_c;
+  const doPass = env.dissolved_oxygen_mg != null
+    && env.dissolved_oxygen_mg >= thresholds.do_min_mg;
+  const failing = env.failing || [];
+  const smsLog = env.sms_log || [];
 
   return (
-    <div className="mt-6 rounded-3xl border border-white/10 bg-slate-950/45 p-4">
-      <div className="mb-4 flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <h3 className="text-lg font-semibold text-white">Depletion-responsive feeding session</h3>
-          <p className="text-sm text-slate-400">R = (P0 − Pt) / P0 over the 5-minute observation window after each increment</p>
-        </div>
-        <div className="rounded-full border border-sky-300/25 bg-sky-300/10 px-3 py-1.5 text-xs font-bold text-sky-100">
-          {feedingSession.state}
-        </div>
-      </div>
+    <section className={`mt-6 rounded-3xl border p-5 ${safe ? 'border-emerald-300/25 bg-emerald-300/[0.06]' : 'border-red-300/30 bg-red-300/[0.08]'}`}>
+      <SectionHeader
+        icon={<ShieldAlert />}
+        title="Environmental verification gate (Table 2)"
+        subtitle="Binary Safe/Unsafe. Both temperature and dissolved oxygen must pass; pH, turbidity and ammonia are outside the feeding-gate scope (thesis delimitations)."
+        right={
+          <div className="flex flex-col items-end gap-2">
+            <span className={`rounded-full px-4 py-2 text-sm font-bold ring-1 ${gateStatusClass(safe)}`}>
+              {safe ? 'Safe - incremental feeding' : 'Unsafe - withhold feed + SMS'}
+            </span>
+            {env.simulated && <SimulatedBadge />}
+          </div>
+        }
+      />
 
-      <div className="mb-4 grid grid-cols-5 gap-3">
-        <SessionStat label="Reference dose D_ref" value={feedingSession.dRef} detail="Calibrated at stocking" />
-        <SessionStat label="Increment size" value={feedingSession.increment} detail="Fixed step" />
-        <SessionStat label="Observation window" value={feedingSession.observationWindow} detail="Post-dispense" />
-        <SessionStat label="Session progress" value={feedingSession.dispensed} detail={feedingSession.ceiling} />
-        <SessionStat label="Current R" value="0.64" detail="Moderate - half next" warn />
-      </div>
+      {!safe && failing.length > 0 && (
+        <div className="mb-4 rounded-2xl border border-red-300/30 bg-red-500/10 px-4 py-3 text-sm font-semibold text-red-100">
+          Failing parameter: {failing.join(' and ')} outside the Table 2 band.
+        </div>
+      )}
+      {!env.available && (
+        <div className="mb-4 rounded-2xl border border-red-300/30 bg-red-500/10 px-4 py-3 text-sm text-red-100">
+          No water-quality reading available - treated as Unsafe, no feeding action.
+        </div>
+      )}
 
       <div className="grid grid-cols-3 gap-3">
-        {depletionTiers.map((tier) => (
-          <article key={tier.label} className={`rounded-2xl border p-3 ${toneClass[tier.tone]}`}>
+        <GateCard
+          label="Temperature"
+          value={env.temperature_c == null ? '—' : `${env.temperature_c} °C`}
+          band={`${thresholds.temp_min_c}–${thresholds.temp_max_c} °C`}
+          pass={tempPass && env.valid !== false}
+          badge={env.simulated ? <SimulatedBadge /> : null}
+          note={env.time ? `Last reading ${env.time}` : null}
+        />
+        <GateCard
+          label="Dissolved oxygen"
+          value={env.dissolved_oxygen_mg == null ? '—' : `${env.dissolved_oxygen_mg} mg/L`}
+          band={`≥ ${thresholds.do_min_mg} mg/L (no upper bound)`}
+          pass={doPass && env.valid !== false}
+          badge={env.simulated ? <SimulatedBadge /> : null}
+          note={env.valid === false ? 'Invalid reading - feeding withheld' : null}
+        />
+        <GateCard
+          label="Gate decision"
+          value={safe ? 'Safe' : 'Unsafe'}
+          band={safe ? 'Both parameters in band' : `Fails: ${failing.join(', ') || 'reading unavailable'}`}
+          pass={safe}
+          note="Re-checked immediately before every increment"
+        />
+      </div>
+
+      <div className="mt-4 grid grid-cols-2 gap-3 text-xs leading-5 text-slate-300">
+        <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-3">
+          <span className="font-bold text-emerald-200">Safe:</span> 25 °C ≤ T ≤ 31 °C and DO ≥ 5 mg/L → feeding permitted; each increment is gated by a fresh check.
+        </div>
+        <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-3">
+          <span className="font-bold text-red-200">Unsafe:</span> T &lt; 25 °C or T &gt; 31 °C, or DO &lt; 5 mg/L → withhold feed; SMS to the caretaker's registered mobile.
+        </div>
+      </div>
+
+      <div className="mt-4 grid grid-cols-2 gap-3 text-xs leading-5 text-slate-300">
+        <div className="rounded-2xl border border-sky-300/20 bg-sky-300/[0.07] p-3">
+          <div className="mb-1 font-semibold text-sky-100">Pre-feed evaluation (1 h before each session)</div>
+          {schedule ? (
+            <>
+              <div>Next session: <span className="font-semibold text-white">{schedule.next_session_fmt || '—'}</span></div>
+              <div>Pre-feed check: <span className="font-semibold text-white">{schedule.prefeed_fmt || '—'}</span></div>
+              <div>Result: <span className={`font-semibold ${schedule.prefeed_gate_state === 'Safe' ? 'text-emerald-200' : 'text-amber-200'}`}>{schedule.prefeed_result || 'Pending'}</span></div>
+            </>
+          ) : (
+            <div>Schedule unavailable</div>
+          )}
+        </div>
+        <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-3">
+          <div className="mb-1 font-semibold text-white">SMS log (status and times)</div>
+          {smsLog.length === 0 && <div className="text-slate-500">No SMS sent yet</div>}
+          <div className="space-y-1">
+            {smsLog.slice(0, 4).map((entry) => (
+              <div key={entry.id} className="flex flex-wrap items-center justify-between gap-x-3">
+                <span className="text-slate-400">{KIND_LABEL[entry.kind] || entry.kind}</span>
+                <span className="text-emerald-200">{entry.sms_status || '—'}</span>
+                <span className="text-slate-500">sent {entry.sms_sent_at || '—'}</span>
+                <span className="text-slate-500">delivered {entry.sms_delivered_at || '—'}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function FeedingSessionPanel({ feeding, now, admin, onTestSession, testing, notice }) {
+  const session = feeding?.session;
+  const increments = feeding?.increments || [];
+  const dRef = feeding?.d_ref_g || 0;
+  const incrementSize = feeding?.increment_g || 0;
+  const total = session?.total_dispensed_g || 0;
+  const progress = dRef > 0 ? Math.min(100, (total / dRef) * 100) : 0;
+  const schedule = feeding?.schedule;
+  const current = increments[increments.length - 1];
+  const lastIncrementHalf = current && current.size_g < incrementSize;
+  const lastSession = feeding?.last_session;
+  const lastIncrements = feeding?.last_increments || [];
+  const activeSession = session || lastSession;
+  const activeIncrements = session ? increments : lastIncrements;
+  const status = activeSession
+    ? (SESSION_STATUS[activeSession.status] || { label: activeSession.status, tone: 'ok' })
+    : null;
+
+  return (
+    <section className="mt-6 rounded-3xl border border-white/10 bg-slate-950/45 p-5">
+      <SectionHeader
+        icon={<Clock3 />}
+        title="Depletion-responsive feeding session"
+        subtitle={`R = (P0 − Pt) / P0 over a strict ${OBSERVATION_WINDOW} observation window after each increment, against visible pellet depletion.`}
+        right={
+          <div className="flex flex-col items-end gap-2">
+            <span className={`rounded-full px-3 py-1.5 text-xs font-bold ring-1 ${
+              session
+                ? 'bg-sky-400/15 text-sky-100 ring-sky-300/40'
+                : 'bg-white/10 text-slate-200 ring-white/20'
+            }`}>
+              {session ? 'Session running' : status ? status.label : 'No session running'}
+            </span>
+            {session?.source === 'seed' && <SeedBadge />}
+            {session?.source === 'test' && <TestBadge />}
+          </div>
+        }
+      />
+
+      {status?.tone === 'bad' && (
+        <div className="mb-4 rounded-2xl border border-red-300/30 bg-red-500/10 px-4 py-3 text-sm font-semibold text-red-100">
+          {status.label} - the system withheld all further feeding.
+        </div>
+      )}
+
+      <div className="mb-4 grid grid-cols-5 gap-3">
+        <SessionStat label="Reference dose D_ref" value={`${dRef.toFixed(2)} g`} detail="Hard session ceiling" />
+        <SessionStat label="Increment size" value={`${incrementSize.toFixed(3)} g`} detail="0.25 × D_ref" />
+        <SessionStat label="Next increment" value={lastIncrementHalf ? 'Half' : 'Full'} detail={lastIncrementHalf ? '0.5 × increment (Reduce Feed)' : '1 × increment'} warn={lastIncrementHalf} />
+        <SessionStat label="Dispensed" value={`${total.toFixed(3)} g`} detail={`of ${dRef.toFixed(2)} g`} />
+        <SessionStat
+          label="Current R"
+          value={fmtRate(current?.depletion_rate)}
+          detail={current?.classification ? `${current.classification} - ${current.action}` : 'no classification'}
+          warn={current?.classification === 'Low' || current?.classification === 'Moderate'}
+        />
+      </div>
+
+      <div className="mb-4">
+        <div className="mb-1 flex items-center justify-between text-xs text-slate-400">
+          <span>Session progress against D_ref</span>
+          <span>{progress.toFixed(1)}% · ceiling = D_ref</span>
+        </div>
+        <div className="h-3 overflow-hidden rounded-full bg-white/[0.06]">
+          <div
+            className="h-full rounded-full bg-gradient-to-r from-sky-500 to-emerald-400 transition-all duration-500"
+            style={{ width: `${progress}%` }}
+          />
+        </div>
+      </div>
+
+      <div className="mb-4 grid grid-cols-3 gap-3 text-xs text-slate-400">
+        <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-3">
+          <div className="mb-1 font-semibold text-white">Next session</div>
+          <div className="text-lg font-bold text-white">
+            {schedule?.next_session_at ? fmtCountdown(schedule.next_session_at - now) : '—'}
+          </div>
+          <div>{schedule?.next_session_fmt || 'no schedule'}</div>
+        </div>
+        <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-3">
+          <div className="mb-1 font-semibold text-white">Pre-feed evaluation</div>
+          <div className="font-bold text-white">{schedule?.prefeed_result || 'Pending'}</div>
+          <div>1 h before start · gate {schedule?.prefeed_gate_state || '—'}</div>
+        </div>
+        <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-3">
+          <div className="mb-1 font-semibold text-white">Gate re-check</div>
+          <div className="font-bold text-white">Before every increment</div>
+          <div>{feeding?.observation_window_s || 300} s window · culture stage {feeding?.culture_stage || '—'}</div>
+        </div>
+      </div>
+
+      <div className="mb-4 overflow-hidden rounded-2xl border border-white/10">
+        <table className="w-full text-left text-xs">
+          <thead className="bg-white/[0.05] text-slate-400">
+            <tr>
+              <th className="px-3 py-2 font-semibold">#</th>
+              <th className="px-3 py-2 font-semibold">Time</th>
+              <th className="px-3 py-2 font-semibold">Size</th>
+              <th className="px-3 py-2 font-semibold">P0</th>
+              <th className="px-3 py-2 font-semibold">Pt</th>
+              <th className="px-3 py-2 font-semibold">R</th>
+              <th className="px-3 py-2 font-semibold">Classification</th>
+              <th className="px-3 py-2 font-semibold">Action</th>
+              <th className="px-3 py-2 font-semibold">Flag</th>
+              <th className="px-3 py-2 font-semibold">t_exec → t_decision</th>
+              <th className="px-3 py-2 font-semibold">Evidence</th>
+            </tr>
+          </thead>
+          <tbody>
+            {activeIncrements.length === 0 && (
+              <tr>
+                <td className="px-3 py-4 text-slate-500" colSpan={11}>
+                  No increments recorded yet.
+                </td>
+              </tr>
+            )}
+            {activeIncrements.map((row, index) => (
+              <tr key={row.id} className="border-t border-white/[0.06] text-slate-300">
+                <td className="px-3 py-2">{index + 1}</td>
+                <td className="px-3 py-2 whitespace-nowrap">{fmtTime(row.ts)}</td>
+                <td className="px-3 py-2">{row.size_g.toFixed(3)} g</td>
+                <td className="px-3 py-2">
+                  {row.p_start}
+                  {row.p0_simulated && <SimulatedBadge />}
+                </td>
+                <td className="px-3 py-2">
+                  {row.p_end}
+                  {row.pt_simulated && <SimulatedBadge />}
+                </td>
+                <td className="px-3 py-2 font-semibold text-white">{fmtRate(row.depletion_rate)}</td>
+                <td className="px-3 py-2">
+                  {row.classification ? (
+                    <span className={`rounded-full px-2 py-1 text-[11px] font-bold ${CLASSIFICATION_TONE[row.classification] || 'bg-white/10 text-white'}`}>
+                      {row.classification}
+                    </span>
+                  ) : (
+                    <span className="text-slate-500">—</span>
+                  )}
+                </td>
+                <td className="px-3 py-2">{row.action || '—'}</td>
+                <td className="px-3 py-2">
+                  {row.flag ? (
+                    <span className="text-amber-200">{FLAG_LABEL[row.flag] || row.flag}</span>
+                  ) : (
+                    <span className="text-slate-500">—</span>
+                  )}
+                </td>
+                <td className="px-3 py-2 whitespace-nowrap text-slate-400">
+                  {fmtTime(row.t_exec)} → {fmtTime(row.t_decision)}
+                  {row.decision_ms != null && <span className="ml-1 text-slate-500">({row.decision_ms} ms)</span>}
+                </td>
+                <td className="px-3 py-2">
+                  <div className="flex gap-2">
+                    <EvidenceThumb src={row.evidence_p0} label="P0" />
+                    <EvidenceThumb src={row.evidence_pt} label="Pt" />
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {activeSession && (
+        <div className="mb-4 grid grid-cols-4 gap-3 text-xs">
+          <KV label="Session" value={`#${activeSession.id}`} />
+          <KV label="Started" value={fmtDateTime(activeSession.started_at)} />
+          <KV label="End reason" value={status?.label || activeSession.status} />
+          <KV label="Increments / dispensed" value={`${activeSession.increments_dispensed} · ${activeSession.total_dispensed_g.toFixed(3)} g`} />
+        </div>
+      )}
+
+      <div className="grid grid-cols-3 gap-3">
+        {DEPLETION_TIERS.map((tier) => (
+          <article
+            key={tier.label}
+            className={`rounded-2xl border p-3 ${
+              tier.tone === 'high'
+                ? 'border-emerald-300/25 bg-emerald-300/[0.06]'
+                : tier.tone === 'mod'
+                  ? 'border-amber-300/25 bg-amber-300/[0.08]'
+                  : 'border-red-300/30 bg-red-300/[0.08]'
+            }`}
+          >
             <div className="text-xs font-semibold text-slate-400">{tier.rate}</div>
             <div className="mt-1 text-base font-bold text-white">{tier.label}</div>
             <div className="mt-2 text-sm text-slate-300">{tier.action}</div>
@@ -692,9 +539,47 @@ function DepletionDecisionPanel() {
       </div>
 
       <div className="mt-4 rounded-2xl border border-sky-300/20 bg-sky-300/[0.07] p-3 text-sm leading-6 text-sky-100">
-        Actuator dispenses automatically after each decision. Session hard-stops at D_ref. Low-confidence detections are held (not fed into R); uneaten pellets after Low depletion are logged as a water-quality risk.
+        The actuator dispenses automatically after each decision - no manual dispense or approval step exists.
+        The session hard-stops at D_ref. A P0 of 0, a below-threshold confidence, an implausibly rapid depletion
+        or a camera dropout all hold the previous state and take no feeding action.
       </div>
+
+      {admin && (
+        <div className="mt-4 flex flex-wrap items-center gap-3 rounded-2xl border border-violet-300/25 bg-violet-400/[0.07] p-3">
+          <TestBadge />
+          <span className="text-xs text-violet-100">
+            Admin - runs the normal session loop at the true {feeding?.observation_window_s || 300} s window.
+          </span>
+          <button
+            type="button"
+            onClick={onTestSession}
+            disabled={testing || Boolean(session)}
+            className="ml-auto rounded-full border border-violet-300/40 bg-violet-400/15 px-4 py-2 text-xs font-bold text-violet-100 transition hover:bg-violet-400/25 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {testing ? 'Starting…' : 'Run test session now'}
+          </button>
+          {notice && <span className="w-full text-xs text-violet-100">{notice}</span>}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function KV({ label, value }) {
+  return (
+    <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-3">
+      <div className="text-[11px] text-slate-400">{label}</div>
+      <div className="mt-1 text-sm font-semibold text-white">{value}</div>
     </div>
+  );
+}
+
+function EvidenceThumb({ src, label }) {
+  if (!src) return <span className="text-slate-600">{label}: none</span>;
+  return (
+    <a href={src} target="_blank" rel="noreferrer" title={`${label} evidence frame`}>
+      <img src={src} alt={`${label} evidence`} className="h-12 w-20 rounded-lg border border-white/15 object-cover transition hover:border-cyan-300/60" />
+    </a>
   );
 }
 
@@ -708,212 +593,482 @@ function SessionStat({ label, value, detail, warn = false }) {
   );
 }
 
-function DashboardSensorRow() {
-  return (
-    <div className="mt-6 grid grid-cols-2 gap-4">
-      {waterSensors.map((sensor) => {
-        const isWarning = sensor.status === 'Warning';
+function DetectionEvidencePanel({ status }) {
+  const classCounts = status?.class_counts || {};
+  const entries = Object.entries(classCounts);
+  const pellets = status?.pellet_count ?? 0;
+  const total = status?.count ?? 0;
 
-        return (
-          <article
-            key={sensor.name}
-            className={`rounded-3xl border p-4 ${
-              isWarning
-                ? 'border-amber-300/30 bg-amber-300/[0.08] shadow-[0_0_30px_rgba(251,191,36,.08)]'
-                : 'border-white/10 bg-slate-950/45'
-            }`}
+  return (
+    <section className="mt-6 rounded-3xl border border-white/10 bg-slate-950/45 p-5">
+      <SectionHeader
+        icon={<Camera />}
+        title="Detection evidence"
+        subtitle="YOLOv8 oriented bounding boxes inside the feeding-zone ROI. Only feed pellets are counted for the depletion decision."
+        right={
+          <button
+            type="button"
+            onClick={openLiveDashboard}
+            className="inline-flex items-center gap-2 rounded-full border border-cyan-300/30 bg-cyan-300/10 px-3 py-1.5 text-xs font-bold text-cyan-100 hover:bg-cyan-300/20"
           >
-            <div className="mb-5 flex items-start justify-between gap-3">
-              <div className={`grid size-11 place-items-center rounded-2xl ${isWarning ? 'bg-amber-400/15 text-amber-200' : 'bg-cyan-400/10 text-cyan-300'}`}>
-                <Waves className="size-5" />
-              </div>
-              <span className={`rounded-full px-2.5 py-1 text-xs font-bold ring-1 ${dashboardSensorBadgeClass(sensor.status)}`}>
-                {sensor.status}{sensor.note ? ` - ${sensor.note}` : ''}
-              </span>
-            </div>
-            <div className="text-sm text-slate-400">{sensor.name}</div>
-            <div className="mt-1 flex items-baseline gap-2">
-              <span className="text-3xl font-bold text-white">{sensor.value}</span>
-              {sensor.unit && <span className="text-sm font-semibold text-slate-400">{sensor.unit}</span>}
-            </div>
-            <div className={`mt-3 text-xs font-medium ${isWarning ? 'text-amber-200' : 'text-emerald-200'}`}>{sensor.trend}</div>
-          </article>
-        );
-      })}
-    </div>
+            <Camera className="size-3.5" /> Open live camera
+          </button>
+        }
+      />
+
+      <div className="grid grid-cols-4 gap-4">
+        <StatCard icon={<Fish />} label="Pellets in feeding zone" value={pellets} sub="Counted - drives R" />
+        <StatCard icon={<AlertTriangle />} label="Detected, not counted" value={total} sub={entries.length ? entries.map(([name, count]) => `${name}: ${count}`).join(' · ') : 'No detections yet'} />
+        <StatCard icon={<Activity />} label="Rendered frame rate" value={`${(status?.render_fps ?? 0).toFixed(1)} fps`} sub={`Camera ${(status?.stream_fps ?? 0).toFixed(1)} fps · detection ${(status?.detect_fps ?? 0).toFixed(1)} fps`} />
+        <StatCard icon={<CheckCircle2 />} label="Stream status" value={status?.camera_label || '—'} sub={status?.status || '—'} warn={status?.camera_enabled === false} />
+      </div>
+
+      <div className="mt-5 grid grid-cols-2 gap-4">
+        <LiveCameraTile status={status} pellets={pellets} total={total} />
+      </div>
+      <p className="mt-3 text-xs text-slate-500">
+        Live stream, calibration and camera controls live on the caretaker dashboard at 127.0.0.1:8000.
+      </p>
+    </section>
   );
 }
 
-function StatCard({ icon, label, value, trend, warn = false }) {
-  return (
-    <div className="rounded-3xl border border-white/10 bg-white/[0.04] p-4">
-      <div className={`mb-5 grid size-11 place-items-center rounded-2xl ${warn ? 'bg-red-500/15 text-red-300' : 'bg-sky-500/15 text-cyan-300'}`}>{React.cloneElement(icon, { className: 'size-5' })}</div>
-      <div className="text-sm text-slate-400">{label}</div>
-      <div className="mt-1 text-3xl font-bold text-white">{value}</div>
-      <div className={`mt-2 text-xs ${warn ? 'text-red-200' : 'text-emerald-200'}`}>{trend}</div>
-    </div>
-  );
-}
+function AlertsPanel({ alerts }) {
+  const rows = alerts?.alerts || [];
 
-function TimelineChart() {
-  const max = Math.max(...timeline);
   return (
-    <div className="rounded-3xl border border-white/10 bg-slate-950/45 p-4">
+    <div className="rounded-3xl border border-white/10 bg-slate-950/60 p-4">
       <div className="mb-4 flex items-center justify-between">
         <div>
-          <h3 className="text-lg font-semibold text-white">Detection timeline</h3>
-          <p className="text-sm text-slate-400">Last 24 hours - pellet detections per hour</p>
+          <h3 className="text-lg font-semibold text-white">SMS / feeding alerts</h3>
+          <p className="text-sm text-slate-400">Unsafe gate, uneaten feed and fail-safe events</p>
         </div>
-        <div className="flex items-center gap-2 text-sm text-slate-300"><Activity className="size-4 text-cyan-300" /> Peak at 16:00</div>
+        <Bell className="size-5 text-cyan-300" />
       </div>
-      <div className="flex h-48 items-end gap-2 rounded-2xl bg-slate-950/70 p-4">
-        {timeline.map((value, index) => (
-          <div key={index} className="group flex flex-1 flex-col items-center gap-2">
-            <div className="w-full rounded-t-lg bg-gradient-to-t from-sky-500 to-cyan-300 shadow-[0_0_18px_rgba(14,165,233,.25)] transition group-hover:from-red-400" style={{ height: `${(value / max) * 145}px` }} />
-            <div className="text-[10px] text-slate-500">{index % 3 === 0 ? `${index}:00` : ''}</div>
-          </div>
+      <div className="max-h-[560px] space-y-3 overflow-y-auto pr-1">
+        {rows.length === 0 && <div className="text-sm text-slate-500">No alerts yet.</div>}
+        {rows.map((alert) => (
+          <article key={alert.id} className="rounded-2xl border border-white/10 bg-white/[0.04] p-3">
+            <div className="flex items-center justify-between gap-2">
+              <span className="font-semibold text-white">{fmtTime(alert.ts)}</span>
+              <span className={`rounded-full px-2 py-1 text-[11px] font-bold ring-1 ${severityClass(alert.severity)}`}>
+                {alertSeverityLabel(alert.severity)}
+              </span>
+            </div>
+            <div className="mt-2 flex items-center gap-2 text-sm text-slate-300">
+              <span>{KIND_LABEL[alert.kind] || alert.kind}</span>
+              {alert.sms && (
+                <span className="rounded-full bg-sky-400/15 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-sky-200 ring-1 ring-sky-300/40">
+                  SMS {alert.sms_status || 'queued'}
+                </span>
+              )}
+            </div>
+            <div className="mt-1 text-xs leading-4 text-slate-500">{alert.message}</div>
+            {alert.sms && (
+              <div className="mt-1 text-[11px] text-slate-600">
+                sent {alert.sms_sent_at || '—'} · delivered {alert.sms_delivered_at || '—'}
+              </div>
+            )}
+          </article>
         ))}
       </div>
     </div>
   );
 }
 
-function CorrelationPanel() {
-  const maxDetections = Math.max(...correlationData.map((point) => point.detections));
-  const minOxygen = 2.8;
-  const maxOxygen = 5.0;
-  const chartWidth = 660;
-  const chartHeight = 220;
-  const paddingX = 34;
-  const paddingY = 26;
-  const plotWidth = chartWidth - paddingX * 2;
-  const plotHeight = chartHeight - paddingY * 2;
-  const linePoints = correlationData
-    .map((point, index) => {
-      const x = paddingX + (index / (correlationData.length - 1)) * plotWidth;
-      const y = paddingY + ((maxOxygen - point.oxygen) / (maxOxygen - minOxygen)) * plotHeight;
-      return `${x},${y}`;
-    })
-    .join(' ');
+function HistoryPanel({ history }) {
+  const sessions = history?.sessions || [];
 
   return (
     <div className="rounded-3xl border border-white/10 bg-slate-950/45 p-4">
-      <div className="mb-4 flex items-start justify-between gap-4">
+      <div className="mb-4 flex items-center justify-between">
         <div>
-          <h3 className="text-lg font-semibold text-white">Sensor-detection correlation</h3>
-          <p className="text-sm text-slate-400">Supports thesis claim: water quality gates safe feeding decisions</p>
+          <h3 className="text-lg font-semibold text-white">Feeding history</h3>
+          <p className="text-sm text-slate-400">Past sessions with their ending reason</p>
         </div>
-        <div className="flex items-center gap-4 text-xs text-slate-300">
-          <span className="inline-flex items-center gap-2"><span className="size-2 rounded-full bg-cyan-300" /> Detections</span>
-          <span className="inline-flex items-center gap-2"><span className="h-0.5 w-5 rounded-full bg-amber-300" /> Dissolved oxygen</span>
-        </div>
+        <History className="size-5 text-cyan-300" />
       </div>
-
-      <div className="rounded-2xl bg-slate-950/70 p-4">
-        <div className="relative h-[260px]">
-          <div className="absolute left-0 top-2 text-[11px] font-semibold text-slate-500">Fish count</div>
-          <div className="absolute right-0 top-2 text-[11px] font-semibold text-amber-200">DO mg/L</div>
-          <div className="absolute left-16 right-12 top-9 bottom-9 flex items-end gap-2 border-b border-l border-white/10 pl-3">
-            {correlationData.map((point) => (
-              <div key={point.hour} className="group flex h-full flex-1 flex-col justify-end gap-2">
-                <div
-                  className="w-full rounded-t-lg bg-gradient-to-t from-sky-500 to-cyan-300 shadow-[0_0_18px_rgba(14,165,233,.22)] transition group-hover:from-amber-300"
-                  style={{ height: `${(point.detections / maxDetections) * 168}px` }}
-                />
-                <div className="text-center text-[10px] text-slate-500">{point.hour.replace(':00', '')}</div>
-              </div>
-            ))}
-          </div>
-          <svg className="pointer-events-none absolute left-16 right-12 top-9 bottom-9 h-[190px] w-[calc(100%-7rem)] overflow-visible" viewBox={`0 0 ${chartWidth} ${chartHeight}`} preserveAspectRatio="none">
-            <polyline points={linePoints} fill="none" stroke="#fbbf24" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" />
-            {correlationData.map((point, index) => {
-              const x = paddingX + (index / (correlationData.length - 1)) * plotWidth;
-              const y = paddingY + ((maxOxygen - point.oxygen) / (maxOxygen - minOxygen)) * plotHeight;
-
-              return <circle key={point.hour} cx={x} cy={y} r="5" fill="#fde68a" stroke="#0f172a" strokeWidth="2" />;
-            })}
-          </svg>
-          <div className="absolute right-5 top-20 max-w-[280px] rounded-2xl border border-amber-300/30 bg-amber-300/10 px-4 py-3 text-xs font-medium leading-5 text-amber-100">
-            DO drop at 09:00 correlates with reduced pellet activity - feeding withheld
-          </div>
-        </div>
-      </div>
-
-      <div className="mt-4 grid grid-cols-3 gap-3">
-        <InsightCard text="Low DO detected → feeding withheld and SMS alert sent" tone="warning" />
-        <InsightCard text="Temp and DO in Safe bands → feeding recommended" />
-        <InsightCard text="Temperature rise at 14:00 → reduced depletion observed" tone="notice" />
-      </div>
-    </div>
-  );
-}
-
-function InsightCard({ text, tone = 'normal' }) {
-  const toneClass = tone === 'warning'
-    ? 'border-amber-300/25 bg-amber-300/[0.08] text-amber-100'
-    : tone === 'notice'
-      ? 'border-sky-300/20 bg-sky-300/[0.07] text-sky-100'
-      : 'border-white/10 bg-white/[0.04] text-slate-200';
-
-  return (
-    <div className={`rounded-2xl border p-3 text-sm font-medium leading-5 ${toneClass}`}>
-      {text}
-    </div>
-  );
-}
-
-function DetectionReliabilityPanel() {
-  return (
-    <div className="rounded-3xl border border-white/10 bg-slate-950/45 p-4">
-      <div className="mb-4 flex items-start justify-between gap-4">
-        <div>
-          <h3 className="text-lg font-semibold text-white">Detection reliability scan</h3>
-          <p className="text-sm text-slate-400">Use this when YOLOv8 pellet confidence drops or counts look unstable.</p>
-        </div>
-        <div className="rounded-full border border-cyan-300/25 bg-cyan-300/10 px-3 py-1.5 text-xs font-bold text-cyan-100">Demo QA checklist</div>
-      </div>
-      <div className="grid grid-cols-4 gap-3">
-        {detectionChecks.map((check) => {
-          const isPass = check.status === 'pass';
-
+      <div className="max-h-[560px] space-y-2 overflow-y-auto pr-1">
+        {sessions.length === 0 && <div className="text-sm text-slate-500">No sessions recorded yet.</div>}
+        {sessions.map((session) => {
+          const status = SESSION_STATUS[session.status] || { label: session.status };
           return (
-            <article key={check.label} className={`rounded-2xl border p-3 ${isPass ? 'border-emerald-300/20 bg-emerald-300/[0.06]' : 'border-amber-300/25 bg-amber-300/[0.08]'}`}>
-              <div className="mb-3 flex items-center justify-between gap-2">
-                <span className="text-sm font-semibold text-white">{check.label}</span>
-                {isPass ? <CheckCircle2 className="size-4 text-emerald-300" /> : <AlertTriangle className="size-4 text-amber-300" />}
+            <article key={session.id} className="rounded-2xl border border-white/10 bg-white/[0.04] p-3">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-sm font-semibold text-white">Session #{session.id}</span>
+                <span className="flex gap-1">
+                  {session.seed && <SeedBadge />}
+                  {session.test && <TestBadge />}
+                </span>
               </div>
-              <div className={`text-lg font-bold ${isPass ? 'text-emerald-200' : 'text-amber-200'}`}>{check.value}</div>
-              <p className="mt-2 text-xs leading-5 text-slate-400">{check.detail}</p>
+              <div className="mt-1 text-xs text-slate-400">{fmtDateTime(session.started_at)}</div>
+              <div className="mt-1 text-xs text-slate-300">{status.label}</div>
+              <div className="mt-1 text-xs text-slate-500">
+                {session.increments_dispensed} increments · {session.total_dispensed_g.toFixed(3)} g of{' '}
+                {session.d_ref_g.toFixed(2)} g · stage {session.culture_stage}
+                {session.r_mean != null && ` · mean R ${fmtRate(session.r_mean)}`}
+              </div>
             </article>
           );
         })}
       </div>
-        <div className="mt-4 rounded-2xl border border-sky-300/20 bg-sky-300/[0.07] p-4 text-sm leading-6 text-sky-100">
-          Recommended fixes: train on feeding-zone videos, include empty-water negatives, run live detection on pellets only, hold low-confidence frames instead of feeding them into R, and maintain a confidence threshold around 0.50-0.65 for demos.
-        </div>
     </div>
   );
 }
 
-function MobileAppScreen({ activeScreen, onScreenChange }) {
-  if (activeScreen === 'Alerts') {
-    return <MobileAlerts activeScreen={activeScreen} onScreenChange={onScreenChange} />;
+function SetupCard({ config, onSaved }) {
+  const [abw, setAbw] = React.useState('');
+  const [stocks, setStocks] = React.useState('');
+  const [mobile, setMobile] = React.useState('');
+  const [saving, setSaving] = React.useState(false);
+  const [message, setMessage] = React.useState(null);
+
+  React.useEffect(() => {
+    if (!config) return;
+    setAbw(String(config.abw_g ?? ''));
+    setStocks(String(config.num_stocks ?? ''));
+    setMobile(String(config.mobile_number ?? ''));
+  }, [config]);
+
+  if (!config) {
+    return (
+      <div className="rounded-3xl border border-white/10 bg-white/[0.04] p-4 text-sm text-slate-400">
+        Setup unavailable
+      </div>
+    );
   }
 
-  if (activeScreen === 'History') {
-    return <MobileHistory activeScreen={activeScreen} onScreenChange={onScreenChange} />;
-  }
+  const submit = async (event) => {
+    event.preventDefault();
+    setSaving(true);
+    setMessage(null);
+    try {
+      const next = await api.saveConfig({
+        abw_g: Number(abw),
+        num_stocks: Number(stocks),
+        mobile_number: mobile,
+      });
+      setMessage({ ok: true, text: `Saved. Stage ${next.derived_stage}, D_ref ${next.d_ref_g.toFixed(2)} g.` });
+      if (onSaved) onSaved(next);
+    } catch (error) {
+      setMessage({ ok: false, text: `Save failed: ${error.message}` });
+    } finally {
+      setSaving(false);
+    }
+  };
 
-  if (activeScreen === 'Settings') {
-    return <MobileSettings activeScreen={activeScreen} onScreenChange={onScreenChange} />;
-  }
+  return (
+    <div className="rounded-3xl border border-white/10 bg-white/[0.04] p-4">
+      <div className="mb-4 flex items-center justify-between">
+        <div>
+          <h3 className="text-lg font-semibold text-white">Culture setup</h3>
+          <p className="text-sm text-slate-400">Stocked biomass inputs the caretaker registers at stocking</p>
+        </div>
+        <Settings className="size-5 text-cyan-300" />
+      </div>
 
-  return <MobileHome activeScreen={activeScreen} onScreenChange={onScreenChange} />;
+      {config.out_of_band && (
+        <div className="mb-4 rounded-2xl border border-amber-300/30 bg-amber-300/10 px-4 py-3 text-sm font-semibold text-amber-100">
+          ABW {config.abw_g} g is outside every Table 1 band - holding the last valid stage ({config.culture_stage}).
+        </div>
+      )}
+
+      <form onSubmit={submit} className="grid grid-cols-3 gap-3">
+        <label className="block text-xs text-slate-400">
+          Average body weight (g)
+          <input
+            className="mt-1 w-full rounded-xl border border-white/10 bg-slate-950/70 px-3 py-2 text-sm text-white outline-none focus:border-cyan-300/50"
+            type="number"
+            step="0.1"
+            min="0"
+            value={abw}
+            onChange={(event) => setAbw(event.target.value)}
+            required
+          />
+        </label>
+        <label className="block text-xs text-slate-400">
+          Number of stocks
+          <input
+            className="mt-1 w-full rounded-xl border border-white/10 bg-slate-950/70 px-3 py-2 text-sm text-white outline-none focus:border-cyan-300/50"
+            type="number"
+            step="1"
+            min="1"
+            value={stocks}
+            onChange={(event) => setStocks(event.target.value)}
+            required
+          />
+        </label>
+        <label className="block text-xs text-slate-400">
+          Registered mobile number
+          <input
+            className="mt-1 w-full rounded-xl border border-white/10 bg-slate-950/70 px-3 py-2 text-sm text-white outline-none focus:border-cyan-300/50"
+            type="text"
+            value={mobile}
+            onChange={(event) => setMobile(event.target.value)}
+            required
+          />
+        </label>
+        <div className="col-span-3 flex flex-wrap items-center gap-3">
+          <button
+            type="submit"
+            disabled={saving}
+            className="rounded-full border border-cyan-300/40 bg-cyan-400/15 px-4 py-2 text-sm font-bold text-cyan-100 transition hover:bg-cyan-400/25 disabled:opacity-50"
+          >
+            {saving ? 'Saving…' : 'Save setup'}
+          </button>
+          {message && (
+            <span className={`text-xs ${message.ok ? 'text-emerald-200' : 'text-red-200'}`}>{message.text}</span>
+          )}
+        </div>
+      </form>
+
+      <div className="mt-4 grid grid-cols-4 gap-3">
+        <KV label="Culture stage (derived from ABW)" value={`${config.stage?.label} · Month ${config.stage?.month}`} />
+        <KV label="Feeding rate / frequency" value={`${config.stage?.rate_pct}% · ${config.stage?.freq}× per day`} />
+        <KV label="Reference dose D_ref" value={`${config.d_ref_g.toFixed(2)} g per session`} />
+        <KV label="Increment (0.25 × D_ref)" value={`${config.increment_g.toFixed(3)} g`} />
+      </div>
+
+      <div className="mt-3 grid grid-cols-3 gap-3 text-xs text-slate-400">
+        <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-3">
+          <div className="font-semibold text-white">Feed</div>
+          {config.stage?.feed}
+        </div>
+        <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-3">
+          <div className="font-semibold text-white">Sessions per day</div>
+          {config.stage?.sessions_per_day}
+        </div>
+        <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-3">
+          <div className="font-semibold text-white">Weekly recalibration reminder</div>
+          Re-sample ABW weekly and on restock, harvest or stage change.
+          <div className="mt-1 text-slate-500">Last: {config.last_recalibrated_fmt || '—'}</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function NotImplementedNote() {
+  return (
+    <section className="mt-6 rounded-3xl border border-dashed border-white/15 bg-white/[0.03] p-4">
+      <div className="flex items-start gap-3">
+        <AlertTriangle className="mt-0.5 size-5 shrink-0 text-amber-300" />
+        <div>
+          <h4 className="text-sm font-semibold text-white">Not yet implemented (deferred modules)</h4>
+          <ul className="mt-2 grid grid-cols-2 gap-x-6 gap-y-1 text-xs text-slate-400">
+            {DEFERRED_MODULES.map((item) => (
+              <li key={item} className="flex items-center gap-2">
+                <span className="size-1.5 rounded-full bg-amber-300/70" />
+                {item}
+              </li>
+            ))}
+          </ul>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function AdminPanel({ config, onToggleSimulated, saving }) {
+  return (
+    <section className="mt-6 rounded-3xl border border-violet-300/25 bg-violet-400/[0.05] p-4">
+      <div className="mb-3 flex items-center justify-between">
+        <div>
+          <h3 className="text-lg font-semibold text-white">Admin</h3>
+          <p className="text-sm text-slate-400">
+            Calibration sliders, camera source picker and the stop-camera button live on the caretaker dashboard.
+            Label-only gate: authentication is a deferred module.
+          </p>
+        </div>
+        <Settings className="size-5 text-violet-300" />
+      </div>
+
+      <div className="mb-3 flex flex-wrap items-center gap-3 rounded-2xl border border-white/10 bg-white/[0.04] p-3">
+        <SimulatedBadge />
+        <span className="text-xs text-slate-300">
+          Simulated feeding zone - fills in pellet counts when the camera sees none, so the depletion loop can be
+          exercised. Turn it off to enforce the real P0 = 0 fail-safe.
+        </span>
+        <button
+          type="button"
+          onClick={onToggleSimulated}
+          disabled={saving || !config}
+          className="ml-auto rounded-full border border-violet-300/40 bg-violet-400/15 px-4 py-2 text-xs font-bold text-violet-100 transition hover:bg-violet-400/25 disabled:opacity-50"
+        >
+          {saving ? 'Saving…' : config?.simulate_pellets ? 'Turn off simulation' : 'Turn on simulation'}
+        </button>
+      </div>
+
+      <div className="grid grid-cols-3 gap-3 text-xs">
+        <a
+          href={api.exportUrl('increments')}
+          className="rounded-2xl border border-white/10 bg-white/[0.04] p-3 text-slate-200 transition hover:border-cyan-300/40"
+        >
+          <div className="font-semibold text-white">Export increments (CSV)</div>
+          Size, P0, Pt, R, classification, action, flag, evidence
+        </a>
+        <a
+          href={api.exportUrl('sensor_readings')}
+          className="rounded-2xl border border-white/10 bg-white/[0.04] p-3 text-slate-200 transition hover:border-cyan-300/40"
+        >
+          <div className="font-semibold text-white">Export sensor readings (CSV)</div>
+          Temperature, dissolved oxygen, gate state, simulated flag
+        </a>
+        <a
+          href={api.exportUrl('alerts')}
+          className="rounded-2xl border border-white/10 bg-white/[0.04] p-3 text-slate-200 transition hover:border-cyan-300/40"
+        >
+          <div className="font-semibold text-white">Export alerts (CSV)</div>
+          Kind, severity, message, SMS status and times
+        </a>
+      </div>
+      <button
+        type="button"
+        onClick={openLiveDashboard}
+        className="mt-3 rounded-full border border-cyan-300/40 bg-cyan-400/15 px-4 py-2 text-xs font-bold text-cyan-100 hover:bg-cyan-400/25"
+      >
+        Open caretaker dashboard admin view
+      </button>
+    </section>
+  );
+}
+
+function Dashboard({ state, now, admin, setAdmin, onTestSession, testing, notice, onToggleSimulated, savingConfig }) {
+  const { environment, feeding, history, alerts, config, status, error } = state;
+  const gate = environment?.gate_state || 'Unsafe';
+
+  return (
+    <section className="min-w-[980px] flex-1 rounded-[2rem] border border-white/10 bg-slate-900/80 p-6 shadow-2xl shadow-sky-950/40 backdrop-blur">
+      <header className="flex items-center justify-between">
+        <AquaLogo />
+        <div className="flex items-center gap-3">
+          <div className={`rounded-full border px-4 py-2 text-sm font-semibold ${
+            gate === 'Safe'
+              ? 'border-emerald-400/30 bg-emerald-400/10 text-emerald-200'
+              : 'border-red-400/30 bg-red-500/10 text-red-200'
+          }`}>
+            <span className={`mr-2 inline-block size-2 rounded-full ${gate === 'Safe' ? 'bg-emerald-400 shadow-[0_0_14px_#22c55e]' : 'bg-red-400 shadow-[0_0_14px_#ef4444]'}`} />
+            Gate {gate === 'Safe' ? 'Safe - feeding permitted' : 'Unsafe - feeding withheld'}
+          </div>
+          <button
+            type="button"
+            onClick={() => setAdmin((value) => !value)}
+            className={`rounded-full border px-4 py-2 text-sm font-bold transition ${
+              admin
+                ? 'border-violet-300/40 bg-violet-400/20 text-violet-100'
+                : 'border-white/15 bg-white/[0.05] text-slate-200 hover:bg-white/10'
+            }`}
+          >
+            {admin ? 'Admin view' : 'Caretaker view'}
+          </button>
+          <button
+            type="button"
+            onClick={openLiveDashboard}
+            className="inline-flex items-center gap-2 rounded-full border border-cyan-300/40 bg-cyan-400/15 px-4 py-2 text-sm font-bold text-cyan-100 transition hover:bg-cyan-400/25 hover:text-white"
+            title="Open live camera dashboard with YOLOv8 stream"
+          >
+            <Camera className="size-4" />
+            Open Live Camera
+          </button>
+        </div>
+      </header>
+
+      {error && (
+        <div className="mt-4 rounded-2xl border border-red-300/30 bg-red-500/10 px-4 py-3 text-sm text-red-100">
+          Backend unreachable: {error}
+        </div>
+      )}
+      {state.loading && !error && (
+        <div className="mt-4 rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm text-slate-400">
+          Loading telemetry from 127.0.0.1:8000…
+        </div>
+      )}
+
+      <EnvironmentGatePanel environment={environment} schedule={feeding?.schedule} />
+      <FeedingSessionPanel
+        feeding={feeding}
+        now={now}
+        admin={admin}
+        onTestSession={onTestSession}
+        testing={testing}
+        notice={notice}
+      />
+      <DetectionEvidencePanel status={status} />
+
+      <div className="mt-6 grid grid-cols-[1fr_340px] gap-5">
+        <main className="space-y-5">
+          <div className="grid grid-cols-2 gap-5">
+            <HistoryPanel history={history} />
+            <div className="rounded-3xl border border-white/10 bg-slate-950/45 p-4">
+              <h3 className="text-lg font-semibold text-white">Detection checks</h3>
+              <div className="mt-3 space-y-2 text-xs text-slate-400">
+                <div className="flex items-center justify-between rounded-2xl border border-white/10 bg-white/[0.04] p-3">
+                  <span>Environmental gate</span>
+                  <span className={gate === 'Safe' ? 'text-emerald-200' : 'text-red-200'}>{gate}</span>
+                </div>
+                <div className="flex items-center justify-between rounded-2xl border border-white/10 bg-white/[0.04] p-3">
+                  <span>Feeding-zone ROI</span>
+                  <span className="text-emerald-200">Clear</span>
+                </div>
+                <div className="flex items-center justify-between rounded-2xl border border-white/10 bg-white/[0.04] p-3">
+                  <span>Observation window</span>
+                  <span className="text-white">{OBSERVATION_WINDOW}</span>
+                </div>
+                <div className="flex items-center justify-between rounded-2xl border border-white/10 bg-white/[0.04] p-3">
+                  <span>Low-confidence reads</span>
+                  <span className="text-amber-200">Held (fail-safe)</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </main>
+        <aside className="space-y-5">
+          <AlertsPanel alerts={alerts} />
+          <SetupCard config={config} />
+        </aside>
+      </div>
+
+      <NotImplementedNote />
+      {admin && <AdminPanel config={config} onToggleSimulated={onToggleSimulated} saving={savingConfig} />}
+    </section>
+  );
 }
 
 function App() {
-  const [activeScreen, setActiveScreen] = React.useState('Home');
-  const activeTitle = activeScreen === 'Home' ? 'Screen 1 - Live camera feed' : `Screen 1 - ${activeScreen}`;
+  const [state, reload] = useTelemetry(2000);
+  const now = useNow(1000);
+  const [admin, setAdmin] = React.useState(false);
+  const [testing, setTesting] = React.useState(false);
+  const [savingConfig, setSavingConfig] = React.useState(false);
+  const [notice, setNotice] = React.useState(null);
+
+  const onTestSession = async () => {
+    setTesting(true);
+    setNotice(null);
+    try {
+      const result = await api.testSession();
+      setNotice(`TEST TRIGGER started session #${result.session_id} at a strict ${result.observation_window_s} s window.`);
+      await reload();
+    } catch (error) {
+      setNotice(`Could not start test session: ${error.message}`);
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const onToggleSimulated = async () => {
+    setSavingConfig(true);
+    setNotice(null);
+    try {
+      const next = await api.saveConfig({ simulate_pellets: !state.config?.simulate_pellets });
+      setNotice(`Feeding zone simulation ${next.simulate_pellets ? 'on' : 'off'}.`);
+      await reload();
+    } catch (error) {
+      setNotice(`Could not change simulation: ${error.message}`);
+    } finally {
+      setSavingConfig(false);
+    }
+  };
 
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_top_left,rgba(14,165,233,.28),transparent_34%),linear-gradient(135deg,#020617,#0f172a_48%,#062134)] px-6 py-8 text-slate-100">
@@ -921,27 +1076,30 @@ function App() {
         <div className="mb-8 flex flex-wrap items-end justify-between gap-4">
           <div>
             <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-cyan-300/25 bg-cyan-300/10 px-4 py-2 text-sm font-medium text-cyan-100">
-              <Zap className="size-4 text-cyan-300" /> Parallel and distributed computing prototype
+              <Fish className="size-4 text-cyan-300" /> YOLOv8 feed-pellet detection · ESP32 sensing · GSM/SMS alerts
             </div>
-            <h1 className="text-4xl font-bold tracking-tight text-white md:text-6xl">Tilapiers monitoring system</h1>
-            <p className="mt-3 max-w-3xl text-slate-300">Demo aligned to the thesis scope: YOLOv8 feed-pellet detection in the feeding zone, temperature and dissolved-oxygen safety gate, depletion-responsive feeding, SMS alerts, historical logs, and sensor-detection correlation.</p>
-          </div>
-          <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4 text-sm text-slate-300">
-            <div className="font-semibold text-white">Future integration notes</div>
-            <div>YOLOv10 target - ESP32 water quality sensors - FCM escalation</div>
+            <h1 className="text-4xl font-bold tracking-tight text-white md:text-5xl">
+              Tilapiers: A YOLOv8-Based Intelligent Behavior Analysis and Automated Feeding System for Tilapia
+            </h1>
+            <p className="mt-3 max-w-3xl text-slate-300">
+              Feeding happens only when temperature and dissolved oxygen are classified Safe. A reference starter
+              dose is dispensed in fixed increments of 25%, and visible pellet depletion over each five-minute
+              observation window decides whether to continue, reduce or stop.
+            </p>
           </div>
         </div>
 
-        <div className="flex flex-col gap-8 2xl:flex-row">
-          <div className="grid gap-5 lg:grid-cols-3 2xl:grid-cols-1">
-            <PhoneFrame title={activeTitle}>
-              <MobileAppScreen activeScreen={activeScreen} onScreenChange={setActiveScreen} />
-            </PhoneFrame>
-            <PhoneFrame title="Screen 2 - Alerts"><MobileAlerts onScreenChange={setActiveScreen} /></PhoneFrame>
-            <PhoneFrame title="Screen 3 - Notification detail"><MobileDetail onScreenChange={setActiveScreen} /></PhoneFrame>
-          </div>
-          <Dashboard />
-        </div>
+        <Dashboard
+          state={state}
+          now={now}
+          admin={admin}
+          setAdmin={setAdmin}
+          onTestSession={onTestSession}
+          testing={testing}
+          notice={notice}
+          onToggleSimulated={onToggleSimulated}
+          savingConfig={savingConfig}
+        />
       </div>
     </div>
   );
