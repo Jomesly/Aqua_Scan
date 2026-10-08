@@ -4,9 +4,11 @@ import time
 import cv2
 import numpy as np
 from fastapi import FastAPI
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
+import paper_config as pc
+import telemetry
 from detection_core import (
     Calibration,
     annotate_frame,
@@ -17,6 +19,7 @@ from detection_core import (
     load_person_model,
     open_camera,
     parse_camera_source,
+    predictions,
     result_metrics,
 )
 from model_config import CAMERA_INDICES, MODEL_PATH
@@ -32,11 +35,13 @@ camera_enabled = True
 last_source_before_off = "auto"
 latest_metrics = {
     "count": 0,
+    "pellet_count": 0,
     "max_confidence": 0.0,
     "avg_confidence": 0.0,
     "class_counts": {},
     "suppressed_people": 0,
     "stream_fps": 0.0,
+    "render_fps": 0.0,
     "detect_fps": 0.0,
     "status": "waiting for stream",
     "camera": "auto",
@@ -46,11 +51,13 @@ latest_metrics = {
 }
 ZERO_METRICS = {
     "count": 0,
+    "pellet_count": 0,
     "max_confidence": 0.0,
     "avg_confidence": 0.0,
     "class_counts": {},
     "suppressed_people": 0,
     "stream_fps": 0.0,
+    "render_fps": 0.0,
     "detect_fps": 0.0,
 }
 
@@ -154,7 +161,16 @@ def set_camera_enabled(enabled: bool) -> bool:
         return camera_enabled
 
 
+STREAM_MAX_WIDTH = 1280
+
+
 def jpeg_frame(frame):
+    height, width = frame.shape[:2]
+    if width > STREAM_MAX_WIDTH:
+        scaled = max(1, round(height * STREAM_MAX_WIDTH / width))
+        frame = cv2.resize(
+            frame, (STREAM_MAX_WIDTH, scaled), interpolation=cv2.INTER_LINEAR
+        )
     ok, buffer = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 60])
     if not ok:
         return None
@@ -196,7 +212,7 @@ _latest_payload_lock = threading.Lock()
 _capture_state = {"running": False, "threads": []}
 _shared = {"frame": None, "seq": 0}
 _shared_lock = threading.Lock()
-_detection_cache = {"result": None, "calibration": None, "updated_at": 0.0}
+_detection_cache = {"result": None, "metrics": None, "calibration": None, "updated_at": 0.0}
 _detection_lock = threading.Lock()
 DETECTION_MAX_AGE = 2.0
 
@@ -327,18 +343,6 @@ def capture_worker():
 
             _set_shared_frame(frame.copy())
 
-            with _detection_lock:
-                cached_result = _detection_cache["result"]
-                cached_calibration = _detection_cache["calibration"]
-                cached_age = time.monotonic() - _detection_cache["updated_at"]
-
-            if cached_result is not None and cached_age <= DETECTION_MAX_AGE:
-                annotated, _ = annotate_frame(frame, cached_result, cached_calibration)
-            else:
-                annotated = frame
-
-            _publish_payload(jpeg_frame(annotated))
-
             fps = stream_rate.tick()
             with state_lock:
                 latest_metrics["stream_fps"] = round(fps, 2)
@@ -387,12 +391,52 @@ def inference_worker():
                 person_boxes = getattr(result, "tilapiers_person_boxes", person_boxes) or []
                 person_due_at = now + 0.5
 
+            metrics = result_metrics(result)
             with _detection_lock:
                 _detection_cache["result"] = result
+                _detection_cache["metrics"] = metrics
                 _detection_cache["calibration"] = active_calibration
                 _detection_cache["updated_at"] = time.monotonic()
 
-            update_detection_metrics(result_metrics(result), infer_rate.tick())
+            update_detection_metrics(metrics, infer_rate.tick())
+    finally:
+        pass
+
+
+def render_worker():
+    last_seq = -1
+    render_rate = RateCounter()
+
+    try:
+        while True:
+            frame, seq = _get_shared_frame(last_seq)
+            if frame is None:
+                time.sleep(0.01)
+                continue
+            last_seq = seq
+
+            with _detection_lock:
+                result = _detection_cache["result"]
+                metrics = _detection_cache["metrics"]
+                active_calibration = _detection_cache["calibration"]
+                fresh = (
+                    time.monotonic() - _detection_cache["updated_at"]
+                ) <= DETECTION_MAX_AGE
+
+            if result is not None and fresh and active_calibration is not None:
+                annotated, metrics = annotate_frame(
+                    frame, result, active_calibration, metrics
+                )
+            else:
+                annotated = frame
+
+            payload = jpeg_frame(annotated)
+            if payload is None:
+                continue
+            _publish_payload(payload)
+
+            with state_lock:
+                latest_metrics["render_fps"] = round(render_rate.tick(), 2)
     finally:
         pass
 
@@ -403,6 +447,7 @@ def start_capture_worker():
     for target, name in (
         (capture_worker, "tilapiers-capture"),
         (inference_worker, "tilapiers-inference"),
+        (render_worker, "tilapiers-render"),
     ):
         thread = threading.Thread(target=target, daemon=True, name=name)
         _capture_state["threads"].append(thread)
@@ -420,6 +465,44 @@ def frame_stream():
             yield payload
         else:
             time.sleep(0.01)
+
+
+PELLET_CLASS_NAME = "Pellets"
+
+
+def _pellet_observation(kind, p0=None):
+    """Feeding-zone pellet count for the depletion decision.
+
+    Pellets class only: the paper's algorithm counts feed pellets, never fish.
+    Returns count=None when no fresh detection exists (camera dropout).
+    """
+    with _detection_lock:
+        result = _detection_cache["result"]
+        updated_at = _detection_cache["updated_at"]
+
+    if result is None or (time.monotonic() - updated_at) > DETECTION_MAX_AGE:
+        return {"count": None, "confidence": 0.0}
+
+    confidences = [
+        float(box.conf[0])
+        for box in predictions(result)
+        if result.names.get(int(box.cls[0]), "") == PELLET_CLASS_NAME
+    ]
+    if not confidences:
+        return {"count": 0, "confidence": 0.0}
+    return {
+        "count": len(confidences),
+        "confidence": round(sum(confidences) / len(confidences), 3),
+    }
+
+
+def _evidence_frame():
+    return _get_payload()
+
+
+telemetry.set_providers(pellet=_pellet_observation, evidence=_evidence_frame)
+telemetry.init()
+start_capture_worker()
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -488,6 +571,7 @@ def dashboard():
         <div class="subtitle">Feed-pellet detection with live calibration controls</div>
       </div>
       <div class="panel insight">Model: <span id="modelName" class="ok">loading</span><br/>Classes: <span id="modelClasses">loading</span><br/>Press Ctrl+C in the terminal to stop the server.</div>
+      <button id="toggleAdmin" class="secondary" type="button" data-admin="false">Admin view</button>
     </header>
     <section class="grid">
       <div class="panel">
@@ -498,16 +582,13 @@ def dashboard():
       </div>
       <aside class="cards">
         <div class="card">
-          <div class="label">Detections</div>
+          <div class="label">Pellet count (feeding zone)</div>
           <div id="count" class="value">0</div>
+          <div class="hint">Feed pellets only. This is the count the depletion decision uses.</div>
         </div>
         <div class="card">
-          <div class="label">Detection breakdown</div>
+          <div class="label">Detected, not counted</div>
           <div id="breakdown" class="insight" style="margin-top: 8px;">No detections yet</div>
-        </div>
-        <div class="card">
-          <div class="label">Person/background suppression</div>
-          <div id="suppressed" class="value warn" style="font-size: 22px;">0 filtered</div>
         </div>
         <div class="card">
           <div class="label">Max confidence</div>
@@ -523,8 +604,9 @@ def dashboard():
           <div id="status" class="value warn" style="font-size: 22px;">starting</div>
           <div class="hint">Active camera: <span id="cameraLabel" class="ok">Auto</span></div>
         </div>
-        <div class="card">
-          <div class="label">Settings - camera source</div>
+        <div id="adminOnly" hidden>
+          <div class="card">
+            <div class="label">Settings - camera source</div>
           <button id="toggleCamera" class="danger" type="button" data-enabled="true">Stop camera</button>
           <div class="hint">Stop fully releases the webcam. Start scans for cameras and only shows a picker if more than one is found.</div>
           <div id="startPicker" class="start-picker" hidden>
@@ -577,6 +659,11 @@ def dashboard():
         <div class="card insight">
           Start with Balanced. All 4 classes from Yolo_v8_OBB/best (1).pt are live as rotated boxes: Bubbles (blue), Pellets (red), Tilapia (mint), Waste (white). Keep people out of frame to reduce false positives from skin/clothes.
         </div>
+        <div class="card">
+          <div class="label">Person/background suppression</div>
+          <div id="suppressed" class="value warn" style="font-size: 22px;">0 filtered</div>
+        </div>
+        </div>
       </aside>
     </section>
   </main>
@@ -619,11 +706,11 @@ def dashboard():
     async function refresh() {
       const res = await fetch("/api/status");
       const data = await res.json();
-      $("count").textContent = data.count;
+      $("count").textContent = data.pellet_count ?? 0;
       $("confidence").textContent = pct(data.max_confidence || 0);
       $("status").textContent = data.status;
       $("suppressed").textContent = `${data.suppressed_people || 0} filtered`;
-      $("fps").textContent = `${Number(data.stream_fps || 0).toFixed(1)} fps`;
+      $("fps").textContent = `${Number(data.render_fps || 0).toFixed(1)} fps (camera ${Number(data.stream_fps || 0).toFixed(1)}, detect ${Number(data.detect_fps || 0).toFixed(1)})`;
       $("detectFps").textContent = `${Number(data.detect_fps || 0).toFixed(1)} fps`;
       $("modelName").textContent = data.model.name;
       $("modelClasses").textContent = data.model.classes.join(", ");
@@ -820,6 +907,14 @@ def dashboard():
     });
     $("scanCameras").addEventListener("click", () => scanCameras());
 
+    $("toggleAdmin").addEventListener("click", () => {
+      const button = $("toggleAdmin");
+      const admin = button.dataset.admin !== "true";
+      button.dataset.admin = String(admin);
+      button.textContent = admin ? "Caretaker view" : "Admin view";
+      $("adminOnly").hidden = !admin;
+    });
+
     syncLabels();
     setInterval(refresh, 750);
     refresh();
@@ -917,3 +1012,80 @@ def update_calibration(update: CalibrationUpdate):
             calibration.min_box_area_ratio = calibration.max_box_area_ratio
 
         return calibration.as_dict()
+
+
+# ---------------------------------------------------------------- telemetry
+
+
+class ConfigUpdate(BaseModel):
+    abw_g: float | None = None
+    num_stocks: int | None = None
+    mobile_number: str | None = None
+    simulate_pellets: bool | None = None
+
+
+@app.get("/api/environment")
+def api_environment():
+    return telemetry.get_environment()
+
+
+@app.get("/api/feeding/session")
+def api_feeding_session():
+    return telemetry.get_feeding_session()
+
+
+@app.get("/api/feeding/history")
+def api_feeding_history(limit: int = 25, session_id: int | None = None):
+    return telemetry.get_feeding_history(limit=limit, session_id=session_id)
+
+
+@app.get("/api/alerts")
+def api_alerts(limit: int = 100):
+    return {"alerts": telemetry.get_alerts(limit=limit)}
+
+
+@app.get("/api/config")
+def api_get_config():
+    return telemetry.get_config()
+
+
+@app.post("/api/config")
+def api_post_config(update: ConfigUpdate):
+    return telemetry.set_config(
+        abw_g=update.abw_g,
+        num_stocks=update.num_stocks,
+        mobile_number=update.mobile_number,
+        simulate_pellets=update.simulate_pellets,
+    )
+
+
+@app.get("/api/schedule")
+def api_schedule():
+    return telemetry.get_schedule()
+
+
+@app.get("/api/export")
+def api_export(table: str = "increments"):
+    from fastapi.responses import Response
+
+    csv_text = telemetry.export_csv(table)
+    filename = f"tilapiers_{table}.csv"
+    return Response(
+        csv_text,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.post("/api/admin/test-session")
+def api_test_session():
+    """TEST TRIGGER - starts the normal session loop at the true 300 s window.
+
+    Label-only: authentication is a deferred module, so this is not enforced
+    as an admin gate yet. No caretaker approval step is involved.
+    """
+    session_id, error = telemetry.start_session(pc.SOURCE_TEST)
+    if error:
+        return JSONResponse(status_code=409, content={"ok": False, "error": error})
+    return {"ok": True, "session_id": session_id, "source": pc.SOURCE_TEST,
+            "observation_window_s": pc.OBSERVATION_WINDOW_S}

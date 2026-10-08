@@ -26,3 +26,8 @@ weights_updated/*.onnx
 # Logs
 *.log
 **/*.log
+
+# Local databases
+*.db
+*.db-wal
+*.db-shm

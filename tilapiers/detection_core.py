@@ -379,6 +379,7 @@ def result_metrics(result):
         "max_confidence": max(confidences) if confidences else 0.0,
         "avg_confidence": sum(confidences) / len(confidences) if confidences else 0.0,
         "class_counts": class_counts,
+        "pellet_count": class_counts.get("Pellets", 0),
         "suppressed_people": getattr(result, "tilapiers_suppressed_people", 0),
     }
 
@@ -403,6 +404,24 @@ BOX_COLORS = {
 }
 
 
+LARGE_LABEL_BOX_PX = 28
+LARGE_LABEL_FONT = 0.55
+LARGE_LABEL_THICKNESS = 2
+SMALL_LABEL_FONT = 0.32
+SMALL_LABEL_THICKNESS = 1
+
+
+def label_style(width, height):
+    """Font scale/thickness/padding for a detection.
+
+    Readable boxes keep the normal label; tiny boxes (pellets) get a smaller
+    font so the label stays visible without dominating the frame.
+    """
+    if width >= LARGE_LABEL_BOX_PX and height >= LARGE_LABEL_BOX_PX:
+        return LARGE_LABEL_FONT, LARGE_LABEL_THICKNESS, 6
+    return SMALL_LABEL_FONT, SMALL_LABEL_THICKNESS, 3
+
+
 def box_color(class_name):
     return BOX_COLORS.get(class_name, hex_to_bgr(DEFAULT_BOX_COLOR))
 
@@ -415,11 +434,12 @@ def label_text_color(bgr):
 
 def draw_detections(frame, result, font=cv2.FONT_HERSHEY_SIMPLEX):
     oriented = getattr(result, "obb", None) is not None
+    polygons = {}
+    labels = []
 
     for box in predictions(result):
         class_id = int(box.cls[0])
         class_name = result.names.get(class_id, str(class_id))
-        confidence = float(box.conf[0])
         color = box_color(class_name)
 
         corners = corner_points(box)
@@ -429,38 +449,57 @@ def draw_detections(frame, result, font=cv2.FONT_HERSHEY_SIMPLEX):
 
         if oriented:
             poly = np.round(corners).astype(np.int32).reshape(-1, 1, 2)
-            cv2.polylines(frame, [poly], True, color, 2, cv2.LINE_AA)
+            polygons.setdefault(color, []).append(poly)
         else:
             cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
 
+        labels.append(
+            (class_name, float(box.conf[0]), color, x1, y1, x2, y2)
+        )
+
+    for color, batch in polygons.items():
+        cv2.polylines(frame, batch, True, color, 2, cv2.LINE_AA)
+
+    for class_name, confidence, color, x1, y1, x2, y2 in labels:
         label = f"{class_name} {confidence:.2f}"
-        (text_w, text_h), baseline = cv2.getTextSize(label, font, 0.55, 2)
-        label_top = max(y1 - text_h - baseline - 8, 0)
+        scale, thickness, pad = label_style(x2 - x1, y2 - y1)
+        (text_w, text_h), baseline = cv2.getTextSize(label, font, scale, thickness)
+        above = y1 - text_h - baseline - pad >= 0
+        if above:
+            label_top = y1 - text_h - baseline - pad
+            label_bottom = y1
+            origin = (x1 + 4, max(y1 - baseline - 4, text_h + 2))
+        else:
+            label_top = y2
+            label_bottom = y2 + text_h + baseline + pad
+            origin = (x1 + 4, min(y2 + text_h + pad, frame.shape[0] - 2))
+
         cv2.rectangle(
             frame,
             (x1, label_top),
-            (min(x1 + text_w + 10, frame.shape[1] - 1), y1),
+            (min(x1 + text_w + pad * 2, frame.shape[1] - 1), label_bottom),
             color,
             -1,
         )
         cv2.putText(
             frame,
             label,
-            (x1 + 5, max(y1 - baseline - 5, text_h + 3)),
+            origin,
             font,
-            0.55,
+            scale,
             label_text_color(color),
-            2,
+            thickness,
             cv2.LINE_AA,
         )
 
     return frame
 
 
-def annotate_frame(frame, result, calibration):
+def annotate_frame(frame, result, calibration, metrics=None):
     annotated = draw_detections(frame.copy(), result)
     font = cv2.FONT_HERSHEY_SIMPLEX
-    metrics = result_metrics(result)
+    if metrics is None:
+        metrics = result_metrics(result)
     parts = [f"Detections: {metrics['count']}"]
     for name in sorted(metrics.get("class_counts", {})):
         parts.append(f"{name} {metrics['class_counts'][name]}")
