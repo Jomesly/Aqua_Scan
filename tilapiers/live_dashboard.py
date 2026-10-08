@@ -196,8 +196,9 @@ _latest_payload_lock = threading.Lock()
 _capture_state = {"running": False, "threads": []}
 _shared = {"frame": None, "seq": 0}
 _shared_lock = threading.Lock()
-_detection_cache = {"result": None, "calibration": None}
+_detection_cache = {"result": None, "calibration": None, "updated_at": 0.0}
 _detection_lock = threading.Lock()
+DETECTION_MAX_AGE = 2.0
 
 
 def _publish_payload(payload):
@@ -329,8 +330,9 @@ def capture_worker():
             with _detection_lock:
                 cached_result = _detection_cache["result"]
                 cached_calibration = _detection_cache["calibration"]
+                cached_age = time.monotonic() - _detection_cache["updated_at"]
 
-            if cached_result is not None:
+            if cached_result is not None and cached_age <= DETECTION_MAX_AGE:
                 annotated, _ = annotate_frame(frame, cached_result, cached_calibration)
             else:
                 annotated = frame
@@ -365,14 +367,22 @@ def inference_worker():
             with state_lock:
                 active_calibration = Calibration(**calibration.as_dict())
 
-            result = detect_fish(
-                frame,
-                model,
-                active_calibration,
-                person_model,
-                person_boxes=person_boxes,
-                refresh_person=refresh_person,
-            )
+            try:
+                result = detect_fish(
+                    frame,
+                    model,
+                    active_calibration,
+                    person_model,
+                    person_boxes=person_boxes,
+                    refresh_person=refresh_person,
+                )
+            except Exception as exc:
+                with _detection_lock:
+                    _detection_cache["result"] = None
+                print(f"inference failed, retrying: {exc}")
+                time.sleep(0.2)
+                continue
+
             if refresh_person:
                 person_boxes = getattr(result, "tilapiers_person_boxes", person_boxes) or []
                 person_due_at = now + 0.5
@@ -380,6 +390,7 @@ def inference_worker():
             with _detection_lock:
                 _detection_cache["result"] = result
                 _detection_cache["calibration"] = active_calibration
+                _detection_cache["updated_at"] = time.monotonic()
 
             update_detection_metrics(result_metrics(result), infer_rate.tick())
     finally:
