@@ -1,0 +1,152 @@
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                                                                              ║
+║                  ✅ FOUND YOUR ARDUINO ON COM5! ✅                            ║
+║                                                                              ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+PROBLEM IDENTIFIED:
+═══════════════════════════════════════════════════════════════════════════════
+
+Your Arduino is on COM5, not COM3!
+  Device: USB-SERIAL CH340 (COM5)
+
+Arduino LCD shows: 18°C
+Dashboard shows:   28°C (simulated - WRONG!)
+
+═══════════════════════════════════════════════════════════════════════════════
+
+✅ FIXES APPLIED:
+═══════════════════════════════════════════════════════════════════════════════
+
+1. ✓ Modified live_dashboard.py to AUTO-DETECT COM ports
+2. ✓ Will now try COM5 first (your actual port)
+3. ✓ Disabled dissolved oxygen simulation (now blank)
+4. ✓ Added debug logging to show Arduino temperature
+5. ✓ Created test_com5.py to verify connection
+
+═══════════════════════════════════════════════════════════════════════════════
+
+🚀 RESTART DASHBOARD NOW:
+═══════════════════════════════════════════════════════════════════════════════
+
+QUICK START:
+  Double-click: START_COM5.bat
+
+OR MANUAL:
+  1. Stop current dashboard (Ctrl+C)
+  2. npm run backend
+  3. Look for: [Arduino] ✓✓✓ CONNECTED SUCCESSFULLY on COM5 ✓✓✓
+
+═══════════════════════════════════════════════════════════════════════════════
+
+✅ WHAT YOU'LL SEE:
+═══════════════════════════════════════════════════════════════════════════════
+
+Console output:
+  [Arduino] Detected COM ports: COM5
+  [Arduino] Trying to connect to COM5...
+  [Arduino] ✓✓✓ CONNECTED SUCCESSFULLY on COM5 ✓✓✓
+  [Arduino] Real temperature from DS18B20 sensor is now active
+  [Sensor] Arduino temp: 18.0°C
+
+Then every 2 seconds:
+  [Sensor] Arduino temp: 18.0°C  (or your current reading)
+
+NOT:
+  [Sensor] Using simulated temp: 28.0°C - Arduino not connected!
+
+═══════════════════════════════════════════════════════════════════════════════
+
+🔍 VERIFY IT WORKS:
+═══════════════════════════════════════════════════════════════════════════════
+
+After restarting:
+
+1. CONSOLE CHECK:
+   [Arduino] ✓✓✓ CONNECTED SUCCESSFULLY on COM5 ✓✓✓
+   [Sensor] Arduino temp: 18.0°C
+
+2. API CHECK:
+   curl http://127.0.0.1:8000/api/environment
+
+   Should show:
+   {
+     "temperature_c": 18.0,  ← MATCHES ARDUINO!
+     "dissolved_oxygen_mg": null,  ← BLANK (no simulation)
+     "simulated": false,  ← FALSE!
+     "gate_state": "Unsafe"  ← Expected (DO is null)
+   }
+
+3. DASHBOARD CHECK:
+   http://127.0.0.1:8000
+   - Temperature: 18.0°C (matches Arduino LCD ✓)
+   - NO "Simulated" badge
+   - Dissolved Oxygen: — (blank)
+
+═══════════════════════════════════════════════════════════════════════════════
+
+📊 BEFORE vs AFTER:
+═══════════════════════════════════════════════════════════════════════════════
+
+                BEFORE              AFTER
+                ──────              ─────
+Arduino LCD:    18°C                18°C
+Dashboard:      28°C (wrong!)       18°C (correct!)
+DO:             5.6 mg/L (sim)      — (blank)
+Simulated:      true                false
+
+═══════════════════════════════════════════════════════════════════════════════
+
+🧪 TEST ARDUINO FIRST (Optional):
+═══════════════════════════════════════════════════════════════════════════════
+
+Before restarting dashboard, test Arduino standalone:
+
+  cd C:\CodingProjects\Aqua_Scan\Aqua_Scan\tilapiers
+  venv\Scripts\python.exe test_com5.py
+
+You should see:
+  Arduino: 18.0°C (81.0°F) | Status: connected | Last: 2026-10-12T06:40:15
+
+If this works, the dashboard will work too!
+
+═══════════════════════════════════════════════════════════════════════════════
+
+⚠️ IMPORTANT CHANGES:
+═══════════════════════════════════════════════════════════════════════════════
+
+✓ Dissolved oxygen is now BLANK (null) - no simulation
+✓ Temperature comes from Arduino ONLY
+✓ Dashboard auto-detects COM5
+✓ Console shows real-time Arduino temperature readings
+✓ Falls back to simulation ONLY if Arduino disconnects
+
+═══════════════════════════════════════════════════════════════════════════════
+
+🎯 SUCCESS INDICATORS:
+═══════════════════════════════════════════════════════════════════════════════
+
+You'll know it's working when:
+
+  ✅ Console: "[Arduino] ✓✓✓ CONNECTED SUCCESSFULLY on COM5 ✓✓✓"
+  ✅ Console: "[Sensor] Arduino temp: 18.0°C" (every 2 seconds)
+  ✅ Dashboard temperature: 18.0°C (matches Arduino LCD exactly)
+  ✅ NO "Simulated" badge on temperature
+  ✅ Dissolved oxygen shows "—" (blank, not a number)
+  ✅ API returns: "simulated": false
+
+═══════════════════════════════════════════════════════════════════════════════
+
+🚀 ACTION REQUIRED:
+═══════════════════════════════════════════════════════════════════════════════
+
+1. STOP the current dashboard (Ctrl+C)
+2. Run: START_COM5.bat
+3. Watch console for successful connection
+4. Verify dashboard shows 18°C (your Arduino reading)
+
+═══════════════════════════════════════════════════════════════════════════════
+
+Your Arduino is on COM5 and will now connect automatically! 🎉
+
+═══════════════════════════════════════════════════════════════════════════════

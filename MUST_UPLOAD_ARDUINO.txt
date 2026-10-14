@@ -1,0 +1,137 @@
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                                                                              ║
+║           🚨 ARDUINO CODE IS OLD - MUST RE-UPLOAD FIRMWARE 🚨                ║
+║                                                                              ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+PROBLEM FOUND:
+═══════════════════════════════════════════════════════════════════════════════
+
+Your Arduino is sending:
+  ❌ "Temp C: 19.75 | Temp F: 67.55"  (OLD CODE - Plain text)
+
+It should send:
+  ✅ {"status":"ok","temperature_c":19.75,"temperature_f":67.55}  (NEW CODE - JSON)
+
+The Arduino code currently on your device is your ORIGINAL code, NOT the new
+integration code I created!
+
+═══════════════════════════════════════════════════════════════════════════════
+
+🔧 FIX - RE-UPLOAD ARDUINO CODE:
+═══════════════════════════════════════════════════════════════════════════════
+
+1. Open Arduino IDE
+
+2. Open this file:
+   C:\CodingProjects\Aqua_Scan\arduino_temp_sensor.ino
+
+3. Make sure these libraries are installed (Sketch → Include Library → Manage Libraries):
+   - OneWire
+   - DallasTemperature
+   - LiquidCrystal_I2C
+   - ArduinoJson  ← IMPORTANT! Must have this!
+
+4. Select your board (Tools → Board)
+
+5. Select COM5 (Tools → Port → COM5)
+
+6. Click Upload (→ button)
+
+7. Wait for "Done uploading"
+
+8. Arduino will restart and LCD will show "Tilapiers Feeder"
+
+═══════════════════════════════════════════════════════════════════════════════
+
+✅ VERIFY ARDUINO CODE IS CORRECT:
+═══════════════════════════════════════════════════════════════════════════════
+
+After uploading, open Serial Monitor (Tools → Serial Monitor):
+- Set baud rate to 115200
+- You should see JSON like this:
+
+  {"status":"ok","temperature_c":19.7,"temperature_f":67.5,"timestamp":12345,"source":"arduino_ds18b20"}
+  {"status":"ok","temperature_c":19.8,"temperature_f":67.6,"timestamp":14345,"source":"arduino_ds18b20"}
+
+NOT like this:
+  Temp C: 19.75 | Temp F: 67.55  ← OLD CODE!
+
+═══════════════════════════════════════════════════════════════════════════════
+
+📝 WHAT THE NEW CODE DOES:
+═══════════════════════════════════════════════════════════════════════════════
+
+OLD CODE (your current Arduino):
+  void loop() {
+    Serial.print("Temp C: ");
+    Serial.print(tempC);
+    Serial.print(" | Temp F: ");
+    Serial.println(tempF);
+  }
+
+NEW CODE (must upload):
+  void loop() {
+    StaticJsonDocument<128> doc;
+    doc["status"] = "ok";
+    doc["temperature_c"] = round(tempC * 10) / 10.0;
+    doc["temperature_f"] = round(tempF * 10) / 10.0;
+    doc["timestamp"] = currentMillis;
+    doc["source"] = "arduino_ds18b20";
+    serializeJson(doc, Serial);
+    Serial.println();
+  }
+
+═══════════════════════════════════════════════════════════════════════════════
+
+🚀 AFTER RE-UPLOADING:
+═══════════════════════════════════════════════════════════════════════════════
+
+1. Close Serial Monitor in Arduino IDE
+
+2. Restart dashboard: npm run backend
+
+3. You should see:
+   [Arduino] ✓✓✓ CONNECTED SUCCESSFULLY on COM5 ✓✓✓
+   [Sensor] Arduino temp: 19.7°C
+   [Sensor] Arduino temp: 19.7°C  (every 2 seconds)
+
+4. Dashboard will show 19.7°C (your real temperature)
+
+5. No more "Invalid JSON" errors!
+
+═══════════════════════════════════════════════════════════════════════════════
+
+⚠️ IMPORTANT:
+═══════════════════════════════════════════════════════════════════════════════
+
+The file arduino_temp_sensor.ino already has the correct code.
+You just need to UPLOAD it to your Arduino!
+
+The Arduino still has your OLD code on it, which sends plain text instead of JSON.
+
+═══════════════════════════════════════════════════════════════════════════════
+
+📋 CHECKLIST:
+═══════════════════════════════════════════════════════════════════════════════
+
+Before uploading:
+□ Arduino IDE installed
+□ ArduinoJson library installed  ← CRITICAL!
+□ File open: arduino_temp_sensor.ino
+□ Board selected
+□ Port COM5 selected
+
+After uploading:
+□ Serial Monitor shows JSON (not plain text)
+□ Close Serial Monitor
+□ Restart dashboard
+□ See [Sensor] Arduino temp: 19.7°C
+□ Dashboard shows 19.7°C
+
+═══════════════════════════════════════════════════════════════════════════════
+
+The Arduino firmware needs to be updated to send JSON!
+Upload arduino_temp_sensor.ino now! 🚀
+
+═══════════════════════════════════════════════════════════════════════════════

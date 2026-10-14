@@ -1,0 +1,132 @@
+"""
+Setup and Configuration Guide for Arduino Temperature Integration
+==================================================================
+
+This guide will help you connect your Arduino DS18B20 temperature sensor
+to the Tilapiers dashboard.
+
+HARDWARE SETUP:
+--------------
+1. Arduino with DS18B20 temperature sensor on GPIO 4
+2. I2C LCD display (16x2) at address 0x27
+3. USB cable connected to your computer
+
+ARDUINO SETUP:
+--------------
+1. Install required Arduino libraries:
+   - Wire (built-in)
+   - LiquidCrystal_I2C
+   - OneWire
+   - DallasTemperature
+   - ArduinoJson
+
+2. Upload the arduino_temp_sensor.ino to your Arduino
+
+3. Note the COM port (Windows) or /dev/ttyUSB* (Linux) that your Arduino is connected to
+
+PYTHON SETUP:
+-------------
+1. Install required Python packages:
+   ```
+   pip install pyserial
+   ```
+
+2. Find your Arduino's serial port:
+
+   Windows:
+   - Open Device Manager
+   - Look under "Ports (COM & LPT)"
+   - Note the COM port (e.g., COM3, COM4)
+
+   Linux:
+   - Run: ls /dev/ttyUSB* or ls /dev/ttyACM*
+   - Usually /dev/ttyUSB0 or /dev/ttyACM0
+
+STARTING THE SYSTEM:
+-------------------
+1. Make sure Arduino is plugged in and running
+
+2. Edit live_dashboard.py to initialize Arduino at startup:
+
+   Add near the top of the file (after imports):
+   ```python
+   from arduino_integration import initialize_arduino
+
+   # Initialize Arduino temperature sensor
+   # Change 'COM3' to your actual port
+   initialize_arduino(port='COM3', baudrate=115200)
+   ```
+
+3. Start the backend server:
+   ```
+   python live_dashboard.py
+   ```
+
+4. The system will automatically:
+   - Try to connect to Arduino on the specified port
+   - Use real temperature from Arduino when available
+   - Fall back to simulated temperature if Arduino disconnects
+
+TESTING:
+--------
+Test the Arduino connection standalone:
+```
+python arduino_serial_bridge.py COM3
+```
+
+You should see:
+- Temperature readings updating every 2 seconds
+- Status showing "connected"
+
+TROUBLESHOOTING:
+---------------
+1. "Could not open port COM3":
+   - Check Device Manager for correct port
+   - Close Arduino IDE Serial Monitor if open
+   - Try unplugging and replugging Arduino
+
+2. "Arduino not detected":
+   - Verify Arduino code is uploaded
+   - Check serial baudrate matches (115200)
+   - Check USB cable is data-capable (not charge-only)
+
+3. Temperature shows as simulated:
+   - Check Arduino integration initialized properly
+   - Look for error messages in console
+   - Verify pyserial is installed
+
+4. DS18B20 sensor error:
+   - Check sensor wiring (Data to GPIO 4)
+   - Verify 4.7kΩ pull-up resistor between Data and VCC
+   - Test sensor with simple Arduino sketch first
+
+DASHBOARD DISPLAY:
+-----------------
+Once connected:
+- Temperature on dashboard will show real Arduino readings
+- "Simulated" badge will NOT appear next to temperature
+- LCD will display temperature in both Celsius and Fahrenheit
+- Serial monitor shows JSON data every 2 seconds
+
+INTEGRATION DETAILS:
+-------------------
+- Arduino sends JSON: {"status":"ok","temperature_c":27.5,"temperature_f":81.5}
+- Python reads serial port in background thread
+- Temperature updates every 2 seconds
+- System uses most recent valid reading
+- Falls back to simulation if Arduino disconnects
+
+FILES CREATED:
+-------------
+1. arduino_temp_sensor.ino - Arduino firmware
+2. arduino_serial_bridge.py - Serial communication handler
+3. arduino_integration.py - Integration with telemetry system
+4. telemetry.py - Modified to use Arduino temperature
+
+CONFIGURATION:
+-------------
+Default settings (change in arduino_integration.py):
+- Port: COM3 (Windows) or /dev/ttyUSB0 (Linux)
+- Baudrate: 115200
+- Update interval: 2 seconds
+- Temperature precision: 1 decimal place

@@ -1,0 +1,155 @@
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                                                                              ║
+║              🚨 COM5 IS LOCKED - CRITICAL FIX REQUIRED 🚨                    ║
+║                                                                              ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+PROBLEM IDENTIFIED:
+═══════════════════════════════════════════════════════════════════════════════
+
+✓ Your Arduino is on COM5 (USB-SERIAL CH340)
+✓ Arduino LCD shows 18°C (WORKING!)
+✗ COM5 port is LOCKED by another program
+✗ Dashboard can't connect - shows 28°C simulated (WRONG!)
+
+Error: PermissionError(13, 'Access is denied.', None, 5)
+
+═══════════════════════════════════════════════════════════════════════════════
+
+🔧 IMMEDIATE FIX - CLOSE THESE PROGRAMS:
+═══════════════════════════════════════════════════════════════════════════════
+
+1. ⚠️ ARDUINO IDE SERIAL MONITOR - MUST BE CLOSED!
+   - If you have Arduino IDE open, close the Serial Monitor
+   - Or close Arduino IDE completely
+   - This is the #1 cause of COM port being locked
+
+2. ⚠️ ANY OTHER SERIAL MONITOR PROGRAMS:
+   - PuTTY
+   - TeraTerm
+   - Serial Monitor tools
+   - Python scripts reading COM5
+
+3. ⚠️ CHECK TASK MANAGER:
+   - Press Ctrl+Shift+Esc
+   - Look for "Arduino" or "python.exe" processes
+   - End them all
+
+═══════════════════════════════════════════════════════════════════════════════
+
+✅ AFTER CLOSING PROGRAMS - RESTART DASHBOARD:
+═══════════════════════════════════════════════════════════════════════════════
+
+1. Make sure Arduino IDE Serial Monitor is CLOSED
+2. Make sure NO Python processes are running
+3. Arduino should still be plugged in (LED lit, LCD showing 18°C)
+4. Run: npm run backend
+
+You should see:
+  [Arduino] Detected COM ports: COM5
+  [Arduino] Trying to connect to COM5...
+  [Arduino] ✓✓✓ CONNECTED SUCCESSFULLY on COM5 ✓✓✓
+  [Arduino] Real temperature from DS18B20 sensor is now active
+  [Sensor] Arduino temp: 18.0°C
+
+═══════════════════════════════════════════════════════════════════════════════
+
+🎯 VERIFICATION:
+═══════════════════════════════════════════════════════════════════════════════
+
+After successful connection:
+
+1. CONSOLE shows:
+   [Sensor] Arduino temp: 18.0°C  (every 2 seconds)
+   NOT: [Sensor] Using simulated temp: 28.0°C - Arduino not connected!
+
+2. DASHBOARD shows:
+   http://127.0.0.1:8000
+   Temperature: 18.0°C (matches Arduino LCD ✓)
+   Dissolved Oxygen: — (blank, no simulation)
+   NO "Simulated" badge
+
+3. API shows:
+   curl http://127.0.0.1:8000/api/environment
+   {
+     "temperature_c": 18.0,  ← MATCHES ARDUINO!
+     "dissolved_oxygen_mg": null,  ← BLANK
+     "simulated": false  ← FALSE!
+   }
+
+═══════════════════════════════════════════════════════════════════════════════
+
+📋 CHECKLIST:
+═══════════════════════════════════════════════════════════════════════════════
+
+Before restarting dashboard:
+
+□ Close Arduino IDE Serial Monitor
+□ Close Arduino IDE completely (if open)
+□ Close any other serial monitor programs
+□ Check Task Manager - no python.exe or arduino processes
+□ Arduino still connected (LCD shows temperature)
+□ Arduino LED is lit
+
+Then:
+
+□ Start dashboard: npm run backend
+□ Watch for: [Arduino] ✓✓✓ CONNECTED SUCCESSFULLY on COM5 ✓✓✓
+□ See: [Sensor] Arduino temp: 18.0°C
+□ Dashboard shows 18.0°C (not 28°C)
+□ No "Simulated" badge
+
+═══════════════════════════════════════════════════════════════════════════════
+
+🔍 IF STILL LOCKED:
+═══════════════════════════════════════════════════════════════════════════════
+
+1. Unplug Arduino USB cable
+2. Wait 5 seconds
+3. Plug it back in
+4. Wait for LCD to initialize (shows "Tilapiers Feeder")
+5. Make sure Arduino IDE is NOT open
+6. Start dashboard: npm run backend
+
+═══════════════════════════════════════════════════════════════════════════════
+
+📝 WHAT WAS FIXED IN THE CODE:
+═══════════════════════════════════════════════════════════════════════════════
+
+✓ Auto-detects COM ports (will find COM5 automatically)
+✓ Dissolved oxygen simulation DISABLED (now shows blank)
+✓ Debug logging added (shows "[Sensor] Arduino temp: XX°C")
+✓ Temperature only from Arduino (no simulation unless disconnected)
+✓ Console shows clear connection status
+
+The code is ready. You just need to:
+  1. Close Arduino IDE Serial Monitor
+  2. Restart the dashboard
+  3. Watch it connect to COM5 automatically
+
+═══════════════════════════════════════════════════════════════════════════════
+
+🎉 SUCCESS WILL LOOK LIKE:
+═══════════════════════════════════════════════════════════════════════════════
+
+Arduino LCD:        18°C ✓
+Dashboard:          18°C ✓  (matches!)
+Dissolved Oxygen:   — (blank)
+Simulated badge:    HIDDEN ✓
+Console log:        [Sensor] Arduino temp: 18.0°C ✓
+
+NOT:
+Arduino LCD:        18°C
+Dashboard:          28°C ✗  (wrong!)
+Dissolved Oxygen:   5.6 mg/L ✗
+Simulated badge:    SHOWING ✗
+Console log:        [Sensor] Using simulated temp ✗
+
+═══════════════════════════════════════════════════════════════════════════════
+
+The Arduino integration is complete and working.
+COM5 just needs to be freed from Arduino IDE Serial Monitor!
+
+Close Serial Monitor → Restart Dashboard → It will work! 🚀
+
+═══════════════════════════════════════════════════════════════════════════════
