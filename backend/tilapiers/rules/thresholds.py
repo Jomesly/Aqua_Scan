@@ -35,8 +35,8 @@ class Thresholds:
     weight_fit_min_fish: int = 10
 
     # --- Sampling board (inner rectangle between the marker corners) ----------
-    board_width_cm: float = 38.0
-    board_height_cm: float = 26.0
+    board_width_cm: float = 32.0  # fits A3 landscape with the markers
+    board_height_cm: float = 20.0
 
     def to_dict(self):
         return asdict(self)

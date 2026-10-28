@@ -1,50 +1,46 @@
-"""Rule-based image-quality check for sampling-board photos.
+"""Rule-based image-quality check (paper Image-Quality Check, step 3).
 
-Sharpness (variance of the Laplacian), exposure (mean brightness), and glare
-(share of blown-out pixels) are measured directly from the photo. Presence of
-the reference scale is decided by the detector and added by the pipeline.
+Sharpness (variance of the Laplacian), exposure (mean brightness) and glare
+(share of blown-out pixels) are measured from the photo. The thresholds are
+starting values to be set on the pilot photos at the study site.
 """
 
+import cv2
 import numpy as np
-from PIL import Image, ImageOps
 
 MAX_SIDE = 1024
-
 SHARPNESS_MIN = 60.0
-BRIGHTNESS_MIN = 55.0
-BRIGHTNESS_MAX = 205.0
-GLARE_MAX_SHARE = 0.03
+BRIGHTNESS_MIN = 50.0
+BRIGHTNESS_MAX = 215.0
+GLARE_MAX_SHARE = 0.08
 
 
-def load_rgb(path):
-    img = Image.open(path)
-    img = ImageOps.exif_transpose(img).convert("RGB")
-    img.thumbnail((MAX_SIDE, MAX_SIDE))
-    return np.asarray(img, dtype=np.float32)
+def load(path_or_bytes):
+    """Read a photo as BGR, honoring EXIF orientation (phones store it rotated)."""
+    from PIL import Image, ImageOps
+    import io
+
+    src = io.BytesIO(path_or_bytes) if isinstance(path_or_bytes, (bytes, bytearray)) else path_or_bytes
+    img = ImageOps.exif_transpose(Image.open(src)).convert("RGB")
+    return cv2.cvtColor(np.asarray(img), cv2.COLOR_RGB2BGR)
 
 
-def laplacian_variance(gray):
-    lap = (
-        -4 * gray[1:-1, 1:-1]
-        + gray[:-2, 1:-1] + gray[2:, 1:-1]
-        + gray[1:-1, :-2] + gray[1:-1, 2:]
-    )
-    return float(lap.var())
-
-
-def check_quality(rgb):
-    gray = rgb @ np.asarray([0.299, 0.587, 0.114], dtype=np.float32)
-    sharp = laplacian_variance(gray)
+def assess(img_bgr):
+    h, w = img_bgr.shape[:2]
+    scale = MAX_SIDE / max(h, w)
+    small = cv2.resize(img_bgr, (int(w * scale), int(h * scale))) if scale < 1 else img_bgr
+    gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+    sharp = float(cv2.Laplacian(gray, cv2.CV_64F).var())
     bright = float(gray.mean())
-    glare = float(np.mean(np.all(rgb >= 250, axis=-1)))
-
-    checks = [
-        {"key": "sharpness", "label": "Sharpness", "value": round(sharp, 1),
-         "passed": sharp >= SHARPNESS_MIN, "hint": "Hold the phone steady and tap to focus on the fish."},
-        {"key": "exposure", "label": "Exposure", "value": round(bright, 1),
-         "passed": BRIGHTNESS_MIN <= bright <= BRIGHTNESS_MAX,
-         "hint": "Too dark - move out of deep shade." if bright < BRIGHTNESS_MIN else "Too bright - shade the board from direct sun."},
-        {"key": "glare", "label": "Glare", "value": round(glare * 100, 2),
-         "passed": glare <= GLARE_MAX_SHARE, "hint": "Tilt the phone or shade the board to remove reflections."},
-    ]
-    return checks
+    glare = float(np.mean(np.all(small >= 250, axis=-1)))
+    reasons = []
+    if sharp < SHARPNESS_MIN:
+        reasons.append("Photo is blurry: hold the phone steady on the stand and tap to focus on the fish.")
+    if bright < BRIGHTNESS_MIN:
+        reasons.append("Photo is too dark: move out of deep shade.")
+    elif bright > BRIGHTNESS_MAX:
+        reasons.append("Photo is too bright: shade the board from direct sun.")
+    if glare > GLARE_MAX_SHARE:
+        reasons.append("Strong glare on the board: tilt or shade it to remove reflections.")
+    return {"ok": not reasons, "sharpness": round(sharp, 1), "brightness": round(bright, 1),
+            "glare_share": round(glare, 4), "reasons": reasons}
