@@ -1,0 +1,36 @@
+# Node / frontend
+node_modules/
+dist/
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local environment
+.env
+.env.*
+!.env.example
+
+# Runtime data (database, uploaded photos, model weights)
+backend/data/
+*.db
+*.db-wal
+*.db-shm
+weights/
+runs/
+
+# Logs / OS / editor
+*.log
+.DS_Store
+Thumbs.db
+~$*
+.~lock.*
+
+# Browser test artifacts
+.playwright-mcp/
+
+# Agent scratch
+.superpowers/
