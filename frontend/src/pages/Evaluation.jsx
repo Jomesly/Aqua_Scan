@@ -1,170 +1,24 @@
 import { useState } from 'react';
-import { Download, FlaskConical, Ruler, Scale, Sigma, Thermometer, Users, Waves } from 'lucide-react';
-import { api, useResource } from '../lib/api';
-import { fmtDateTime, fmtNum, fmtPct } from '../lib/format';
-import { Button, Card, Field, LoadError, Loading, Notice, Stat, useToast } from '../components/ui';
-import { ScatterChart } from '../components/charts';
+import { Download, FlaskConical, Scale, Stethoscope, Target } from 'lucide-react';
+import { Card, LoadError, Loading, Notice, Stat } from '../components/ui';
+import { LineChart } from '../components/charts';
+import { useResource } from '../lib/api';
+import { fmtNum, fmtPct } from '../lib/format';
 
-function Metric({ m, label }) {
-  if (!m) return <span className="subtle">—</span>;
-  return (
-    <span className="mono small">
-      {label ? `${label} ` : ''}R² {fmtNum(m.r2, 3)} · RMSE {fmtNum(m.rmse, 3)} · MAE {fmtNum(m.mae, 3)}
-    </span>
-  );
-}
-
-function FciSection({ ev, onChange }) {
-  const [poly, setPoly] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState(null);
-  const toast = useToast();
-  const model = ev.fci_model;
-  const fitted = model.name === 'fitted';
-  const maxR2 = Math.max(0.01, ...ev.feature_groups.map((g) => g.cv?.r2 || 0));
-
-  const fit = async () => {
-    setBusy(true);
-    setErr(null);
-    try {
-      await api.post('/api/evaluation/fit', { poly_features: poly ? ['condition_factor'] : [] });
-      toast('Model fitted and applied to all fish');
-      onChange();
-    } catch (ex) {
-      setErr(ex.message);
-    } finally {
-      setBusy(false);
-    }
-  };
-  const reset = async () => {
-    await api.post('/api/evaluation/reset-model');
-    toast('Reverted to the default coefficients');
-    onChange();
-  };
-
-  return (
-    <Card title="Fish Condition Index regression" icon={Sigma}
-      hint="Multiple linear regression of the technician's condition score on image indicators and condition factor (degree-2 terms at most).">
-      <div className="grid-2">
-        <div className="stack">
-          <div className="row">
-            <span className={`tag ${fitted ? '' : 'warn'}`}>{fitted ? 'Fitted model in use' : 'Default coefficients in use'}</span>
-            <span className="subtle">{model.source}</span>
-          </div>
-          {model.metrics && (
-            <div className="stack" style={{ gap: 4 }}>
-              <Metric m={model.metrics.train} label="Train" />
-              <Metric m={model.metrics.cv} label={`CV (${model.metrics.cv.method}, ${model.metrics.cv.groups} groups)`} />
-            </div>
-          )}
-          <div className="table-wrap">
-            <table className="data">
-              <thead><tr><th>Term</th><th className="num">Coefficient</th></tr></thead>
-              <tbody>
-                <tr><td>Intercept</td><td className="num">{fmtNum(model.intercept, 3)}</td></tr>
-                {Object.entries(model.coefs).map(([k, v]) => (
-                  <tr key={k}><td>{ev.feature_labels[k.replace('^2', '')] || k}{k.endsWith('^2') ? ' (squared)' : ''}</td><td className="num">{fmtNum(v, 3)}</td></tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        <div className="stack">
-          <h3>What each indicator group adds</h3>
-          <p className="subtle">Cross-validated R², grouped by pond so no pond is in both training and testing.</p>
-          {ev.feature_groups.map((g) => (
-            <div key={g.group} className="bar-row">
-              <span>{g.label}</span>
-              <span className="bar-track" aria-hidden="true"><span className="bar-fill" style={{ width: `${Math.max(0, (g.cv?.r2 || 0) / maxR2) * 100}%` }} /></span>
-              <span className="mono small" style={{ textAlign: 'right' }}>{g.cv ? fmtNum(g.cv.r2, 3) : '—'}</span>
-            </div>
-          ))}
-          {ev.feature_groups[0]?.error && <p className="subtle">{ev.feature_groups[0].error}</p>}
-          <p className="subtle">{ev.n_scored_fish} technician-scored fish available.</p>
-          <label className="row small" style={{ minHeight: 44 }}>
-            <input type="checkbox" checked={poly} onChange={(e) => setPoly(e.target.checked)} style={{ width: 20, height: 20 }} />
-            Add a squared term for condition factor
-          </label>
-          {err && <Notice kind="error">{err}</Notice>}
-          <div className="row">
-            <Button className="primary" icon={FlaskConical} busy={busy} onClick={fit}>Fit model on scored fish</Button>
-            {fitted && <Button onClick={reset}>Reset to default</Button>}
-          </div>
-        </div>
-      </div>
-    </Card>
-  );
-}
-
-function CalibrationSection({ ev, onChange }) {
-  const [probe, setProbe] = useState('');
-  const [ref, setRef] = useState('');
-  const [busy, setBusy] = useState(false);
-  const c = ev.probe_calibration;
-  const add = async (e) => {
-    e.preventDefault();
-    if (probe === '' || ref === '') return;
-    setBusy(true);
-    try {
-      await api.post('/api/calibrations', { probe_c: Number(probe), reference_c: Number(ref) });
-      setProbe('');
-      setRef('');
-      onChange();
-    } finally {
-      setBusy(false);
-    }
-  };
-  return (
-    <Card title="Probe vs reference thermometer" icon={Thermometer} hint="Temperature probe error before and during deployment.">
-      <div className="stats" style={{ marginBottom: 16 }}>
-        <Stat label="Pairs" value={c.n} />
-        <Stat label="MAE" value={fmtNum(c.mae, 2)} unit="°C" />
-        <Stat label="Bias" value={fmtNum(c.bias, 2)} unit="°C" />
-        <Stat label="RMSE" value={fmtNum(c.rmse, 2)} unit="°C" />
-        <Stat label="Max error" value={fmtNum(c.max_abs, 2)} unit="°C" />
-      </div>
-      <form onSubmit={add} className="form-grid two" style={{ alignItems: 'end' }}>
-        <Field label="Probe reading" htmlFor="cal-p">
-          <div className="input-unit"><input id="cal-p" className="input" type="number" step="0.01" inputMode="decimal" value={probe} onChange={(e) => setProbe(e.target.value)} /><span>°C</span></div>
-        </Field>
-        <Field label="Reference thermometer" htmlFor="cal-r">
-          <div className="input-unit"><input id="cal-r" className="input" type="number" step="0.01" inputMode="decimal" value={ref} onChange={(e) => setRef(e.target.value)} /><span>°C</span></div>
-        </Field>
-        <Button type="submit" busy={busy} disabled={probe === '' || ref === ''}>Add calibration pair</Button>
-      </form>
-      {c.rows.length > 0 && (
-        <details className="disclosure" style={{ marginTop: 8 }}>
-          <summary>Show recorded pairs</summary>
-          <div className="table-wrap" style={{ maxHeight: 240 }}>
-            <table className="data">
-              <thead><tr><th>When</th><th className="num">Probe</th><th className="num">Reference</th><th className="num">Error</th></tr></thead>
-              <tbody>
-                {c.rows.map((r) => (
-                  <tr key={r.id}><td>{fmtDateTime(r.ts)}</td><td className="num">{fmtNum(r.probe_c, 2)}</td><td className="num">{fmtNum(r.reference_c, 2)}</td><td className="num">{fmtNum(r.probe_c - r.reference_c, 2)}</td></tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </details>
-      )}
-    </Card>
-  );
-}
-
-function Confusion({ a }) {
-  if (!a.n) return <p className="subtle">No completed rounds with a technician assessment yet.</p>;
+function Confusion({ m, rowLabel = 'System', colLabel = 'Technician' }) {
+  if (!m?.n) return <p className="muted small">No paired assessments yet.</p>;
   return (
     <div className="table-wrap">
-      <table className="confusion" aria-label="Confusion matrix: rows are technician, columns are system">
+      <table className="confusion">
+        <caption className="sr-only">Rows: {rowLabel}. Columns: {colLabel}.</caption>
         <thead>
-          <tr><th>Technician ↓ / System →</th>{a.labels.map((l) => <th key={l} scope="col">{l}</th>)}</tr>
+          <tr><th scope="col">{rowLabel} ↓ / {colLabel} →</th>{m.labels.map((l) => <th key={l} scope="col">{l}</th>)}</tr>
         </thead>
         <tbody>
-          {a.labels.map((t) => (
-            <tr key={t}>
-              <th scope="row">{t}</th>
-              {a.labels.map((s) => <td key={s} className={s === t ? 'diag' : ''}>{a.confusion[t][s]}</td>)}
+          {m.matrix.map((row, i) => (
+            <tr key={m.labels[i]}>
+              <th scope="row">{m.labels[i]}</th>
+              {row.map((v, j) => <td key={j} className={i === j ? 'diag' : ''}>{v}</td>)}
             </tr>
           ))}
         </tbody>
@@ -173,81 +27,165 @@ function Confusion({ a }) {
   );
 }
 
+function Table10({ t }) {
+  return (
+    <div className="table-wrap">
+      <table className="data">
+        <thead><tr><th>Metric</th>{t.models.map((m) => <th key={m} className="num">{m}{m === 'YOLOv8s' && <span className="tag">deployed</span>}</th>)}</tr></thead>
+        <tbody>
+          {t.rows.map(([label, vals, better]) => {
+            const best = better === 'min' ? Math.min(...vals) : Math.max(...vals);
+            return (
+              <tr key={label}>
+                <td>{label}</td>
+                {vals.map((v, i) => <td key={i} className={`num ${v === best ? 'best' : ''}`}>{v}</td>)}
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function ErrorStat({ label, e, unit }) {
+  return (
+    <div className="stats three">
+      <Stat label={`${label} MAE`} value={fmtNum(e?.mae, 2)} unit={unit} />
+      <Stat label="RMSE" value={fmtNum(e?.rmse, 2)} unit={unit} />
+      <Stat label="MARE" value={e?.mare != null ? fmtNum(e.mare, 1) : '—'} unit="%" title={`${e?.n ?? 0} fish`} />
+    </div>
+  );
+}
+
+function WeightModelTable({ fit }) {
+  if (!fit) return <p className="muted small">No fitted model yet. The administrator fits it in Maintenance once enough fish have scale weights.</p>;
+  const rows = ['linear', 'poly'].map((k) => ({ key: k, ...fit[k] }));
+  return (
+    <div className="table-wrap">
+      <table className="data">
+        <thead><tr><th>Model</th><th>Terms kept</th><th className="num">R²</th><th className="num">RMSE g</th><th className="num">MAE g</th>
+          <th className="num">MARE %</th><th className="num">MXAE g</th><th className="num">MXRE %</th></tr></thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.key}>
+              <td>{r.label}{fit.selected === r.key && <span className="tag good">selected</span>}</td>
+              <td className="mono xs">{r.terms.join(', ')}</td>
+              <td className="num">{fmtNum(r.cv.r2, 3)}</td><td className="num">{fmtNum(r.cv.rmse, 1)}</td>
+              <td className="num">{fmtNum(r.cv.mae, 1)}</td><td className="num">{fmtNum(r.cv.mare, 1)}</td>
+              <td className="num">{fmtNum(r.cv.mxae, 1)}</td><td className="num">{fmtNum(r.cv.mxre, 1)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <p className="subtle card-pad">Cross-validated ({fit.cv_scheme}) on {fit.n} fish. The degree-2 model is kept only if it lowers the validation RMSE by at least 5 %.</p>
+    </div>
+  );
+}
+
 export default function Evaluation() {
-  const { data: ev, error, loading, reload } = useResource('/api/evaluation');
-  const { data: ponds } = useResource('/api/ponds?include_archived=true');
-  const pondName = (id) => ponds?.find((p) => p.id === id)?.name || `Pond ${id}`;
-  if (loading && !ev) return <Loading label="Loading evaluation" />;
-  if (error && !ev) return <LoadError error={error} onRetry={reload} />;
-  const sa = ev.stress_association;
-  const le = ev.length_error;
+  const [demo, setDemo] = useState(true);
+  const { data, error, loading, reload } = useResource(`/api/evaluation?include_demo=${demo}`, { deps: [demo] });
+  if (loading && !data) return <Loading />;
+  if (error && !data) return <LoadError error={error} onRetry={reload} />;
+  const b = data.benchmarks;
 
   return (
-    <>
-      <div className="page-head">
+    <div className="stack">
+      <div className="page-head row-between wrap">
         <div>
-          <h1>Evaluation</h1>
-          <p>Model and system performance against technician assessments and reference measurements. All results are descriptive; no claims of statistical significance are made.</p>
+          <span className="eyebrow">Evaluation</span>
+          <h1>How well does Tilapiers agree with the references?</h1>
+          <p>Detector benchmarks, weight-model accuracy against the facility scale, and status agreement with the technician.</p>
+        </div>
+        <div className="page-actions">
+          <a className="btn" href="/api/export/fish.csv"><Download size={18} aria-hidden="true" />Fish CSV</a>
+          <a className="btn" href="/api/export/rounds.csv"><Download size={18} aria-hidden="true" />Rounds CSV</a>
         </div>
       </div>
+      <label className="toggle">
+        <input type="checkbox" checked={demo} onChange={(e) => setDemo(e.target.checked)} />
+        Include demo data ({data.demo_rounds} of {data.rounds_used} completed rounds are demo data)
+      </label>
 
-      <FciSection ev={ev} onChange={reload} />
-
-      <div className="grid-2">
-        <Card title="Health status agreement" icon={Users} hint="System status vs technician's independent assessment, per completed round.">
-          <div className="stats" style={{ marginBottom: 14 }}>
-            <Stat label="Rounds" value={ev.health_agreement.n} />
-            <Stat label="Agreement" value={fmtPct(ev.health_agreement.accuracy)} />
-            <Stat label="Cohen's κ" value={fmtNum(ev.health_agreement.kappa, 2)} />
-          </div>
-          <Confusion a={ev.health_agreement} />
-        </Card>
-        <Card title="Harvest readiness agreement" icon={Waves} hint="'Size reached, health review' counts as not yet Ready.">
-          <div className="stats" style={{ marginBottom: 14 }}>
-            <Stat label="Rounds" value={ev.readiness_agreement.n} />
-            <Stat label="Agreement" value={fmtPct(ev.readiness_agreement.accuracy)} />
-            <Stat label="Cohen's κ" value={fmtNum(ev.readiness_agreement.kappa, 2)} />
-          </div>
-          <Confusion a={ev.readiness_agreement} />
-        </Card>
-      </div>
-
-      <div className="grid-2">
-        <Card title="Environment and fish condition" icon={Scale}
-          hint="Round mean FCI vs hours outside the temperature band since the previous round; pooled across ponds with pond as a grouping factor.">
-          <div className="stats" style={{ marginBottom: 12 }}>
-            <Stat label="Rounds" value={sa.n} />
-            <Stat label="Ponds" value={sa.n_ponds} />
-            <Stat label="Slope (FCI per h)" value={fmtNum(sa.slope, 4)} />
-            <Stat label="R²" value={fmtNum(sa.r2, 3)} />
-          </div>
-          <ScatterChart points={sa.points || []} xLabel="hours outside band" yLabel="mean FCI" groupLabel={pondName} />
-          <p className="subtle" style={{ marginTop: 8 }}>{sa.note}</p>
-        </Card>
-        <div className="grid" style={{ alignContent: 'start' }}>
-          <Card title="Image length vs ruler" icon={Ruler}>
-            <div className="stats">
-              <Stat label="Fish" value={le.n} />
-              <Stat label="MAE" value={fmtNum(le.mae, 2)} unit="cm" />
-              <Stat label="Bias" value={fmtNum(le.bias, 2)} unit="cm" />
-            </div>
-            {le.n_stub_excluded > 0 && <p className="subtle" style={{ marginTop: 8 }}>{le.n_stub_excluded} measurement(s) from the placeholder detector excluded.</p>}
-            {le.n === 0 && <p className="subtle" style={{ marginTop: 8 }}>Available once the trained YOLO26 model detects the reference scale.</p>}
-          </Card>
-          <CalibrationSection ev={ev} onChange={reload} />
+      <Card title="Disease screening detector" icon={FlaskConical}
+        hint="Paper Table 10: three YOLO versions, small scale, same deduplicated split of the public dataset.">
+        <Table10 t={b.table10} />
+        <p className="subtle card-pad">{b.table10.note} Best value in each row is highlighted.</p>
+        <h3 className="sub">Weighted scores (paper Table 11)</h3>
+        <div className="table-wrap">
+          <table className="data">
+            <thead><tr><th>Weighting (P / R / mAP50 / CPU)</th>{b.table11.models.map((m) => <th key={m} className="num">{m}</th>)}</tr></thead>
+            <tbody>
+              {b.table11.rows.map(([label, vals]) => (
+                <tr key={label}><td>{label}</td>{vals.map((v, i) => <td key={i} className={`num ${v === Math.max(...vals) ? 'best' : ''}`}>{v}</td>)}</tr>
+              ))}
+            </tbody>
+          </table>
         </div>
+        <Notice kind="info">Deployed screening model: <strong>{b.deployed?.name}</strong>
+          {b.deployed?.available ? ` (${b.deployed.classes.join(', ')})` : `, unavailable: ${b.deployed?.error}`}.
+          Aeromonas is the weakest class (AP50 0.30). More Aeromonas photos checked by the technician are the first improvement.</Notice>
+      </Card>
+
+      {b.curve && (
+        <Card title="YOLOv8s training run" hint={`100 epochs. Final epoch: precision ${fmtNum(b.final_epoch.precision, 3)}, recall ${fmtNum(b.final_epoch.recall, 3)}, mAP50 ${fmtNum(b.final_epoch.map50, 3)}, mAP50-95 ${fmtNum(b.final_epoch.map50_95, 3)} (validation split).`}>
+          <LineChart rows={b.curve} x="epoch" xLabel="epoch"
+            series={[{ key: 'precision', label: 'Precision' }, { key: 'recall', label: 'Recall' },
+              { key: 'map50', label: 'mAP50' }, { key: 'map50_95', label: 'mAP50-95' }]} />
+          <div className="bench-images">
+            {b.images.map((n) => (
+              <a key={n} href={`/api/benchmarks/${n}`} target="_blank" rel="noreferrer">
+                <img src={`/api/benchmarks/${n}`} alt={n.replace(/[_.]/g, ' ')} loading="lazy" />
+                <span className="xs">{n.replace(/\.(png|jpg)$/, '').replace(/_/g, ' ')}</span>
+              </a>
+            ))}
+          </div>
+        </Card>
+      )}
+
+      <Card title="Screening vs technician" icon={Stethoscope} hint={`${data.screening.n_reviewed} fish checked by the technician`}>
+        <div className="stats three">
+          <Stat label="Accuracy (3 classes)" value={fmtPct(data.screening.accuracy, 1)} />
+          <Stat label="Recall of Refer (fish)" value={fmtPct(data.screening.fish_refer_recall, 1)} title="Share of fish the technician saw signs on that the system referred" />
+          <Stat label="Other / not screened" value={data.screening.other_or_unscreened} />
+        </div>
+        <Confusion m={data.screening} rowLabel="Screening" />
+      </Card>
+
+      <div className="grid-2">
+        <Card title="Health status agreement" icon={Target} hint="Pond Health status vs the technician's independent assessment">
+          <div className="stats three">
+            <Stat label="Exact agreement" value={fmtPct(data.health.accuracy, 1)} />
+            <Stat label="Weighted κ" value={fmtNum(data.health.kappa_w, 3)} />
+            <Stat label="Refer recall" value={fmtPct(data.health.refer_recall, 1)} />
+          </div>
+          <Confusion m={data.health} />
+        </Card>
+        <Card title="Harvest readiness agreement" icon={Target} hint="“Size reached, health review” is compared as Approaching">
+          <div className="stats three">
+            <Stat label="Exact agreement" value={fmtPct(data.readiness.accuracy, 1)} />
+            <Stat label="Weighted κ" value={fmtNum(data.readiness.kappa_w, 3)} />
+            <Stat label="Rounds" value={data.readiness.n} />
+          </div>
+          <Confusion m={data.readiness} />
+        </Card>
       </div>
 
-      <Card title="Export data" icon={Download} hint="CSV files for analysis in a spreadsheet or statistics package. Demo and placeholder rows are labeled.">
-        <div className="row">
-          {[
-            ['fish', 'Fish & indicators'], ['rounds', 'Sampling rounds'], ['temperature', 'Temperature log'],
-            ['observations', 'Observations'], ['notifications', 'Alerts'],
-          ].map(([key, label]) => (
-            <a key={key} className="btn" href={`/api/export/${key}.csv`} download><Download size={16} aria-hidden="true" />{label}</a>
-          ))}
+      <Card title="Weight estimation" icon={Scale} hint="Paper Table 12 format, filled with the current fit">
+        <WeightModelTable fit={data.weight_model.last_fit} />
+        <ErrorStat label="Length vs ruler:" e={data.length_error} unit="cm" />
+        <ErrorStat label="Weight vs scale:" e={data.weight_error} unit="g" />
+        <ErrorStat label="Average weight per round:" e={data.avg_weight_error} unit="g" />
+      </Card>
+
+      <Card title="Image-quality retake rate" hint="Share of uploaded photographs that failed the check and had to be retaken">
+        <div className="stats three">
+          <Stat label="Retake rate" value={fmtPct(data.retakes.rate, 1)} />
+          <Stat label="Failed" value={data.retakes.failed} />
+          <Stat label="Uploaded" value={data.retakes.total} />
         </div>
       </Card>
-    </>
+    </div>
   );
 }

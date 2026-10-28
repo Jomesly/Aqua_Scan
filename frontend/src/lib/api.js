@@ -29,6 +29,12 @@ async function request(method, path, body, isForm = false) {
   } catch {
     /* non-JSON */
   }
+  if (res.status === 401 && path !== '/api/auth/login' && path !== '/api/auth/me') {
+    const here = window.location.pathname + window.location.search;
+    if (!window.location.pathname.startsWith('/login')) {
+      window.location.assign(`/login?next=${encodeURIComponent(here)}`);
+    }
+  }
   if (!res.ok) {
     let detail = data?.detail;
     if (Array.isArray(detail)) detail = detail.map((d) => `${d.loc?.slice(-1)[0]}: ${d.msg}`).join('; ');

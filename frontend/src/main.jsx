@@ -2,30 +2,37 @@ import React from 'react';
 import { createRoot } from 'react-dom/client';
 import { createBrowserRouter, RouterProvider } from 'react-router-dom';
 import './styles.css';
-import Shell from './components/Shell';
+import Shell, { RoleGate } from './components/Shell';
 import { ToastProvider } from './components/ui';
-import Overview from './pages/Overview';
+import { AuthProvider, can } from './lib/auth';
+import Login from './pages/Login';
+import Dashboard from './pages/Dashboard';
 import Pond from './pages/Pond';
-import RoundDetail from './pages/RoundDetail';
-import { SampleStart, SampleRound } from './pages/Sample';
-import Alerts from './pages/Alerts';
+import NewRound from './pages/NewRound';
+import Round from './pages/Round';
+import Review from './pages/Review';
 import Evaluation from './pages/Evaluation';
-import Settings from './pages/Settings';
+import Maintenance from './pages/Maintenance';
+import ContentPage from './pages/ContentPage';
+import Profile from './pages/Profile';
 import NotFound from './pages/NotFound';
 
 const router = createBrowserRouter([
+  { path: '/login', element: <Login /> },
   {
     path: '/',
     element: <Shell />,
     children: [
-      { index: true, element: <Overview /> },
+      { index: true, element: <Dashboard /> },
       { path: 'ponds/:pondId', element: <Pond /> },
-      { path: 'rounds/:roundId', element: <RoundDetail /> },
-      { path: 'sample', element: <SampleStart /> },
-      { path: 'sample/:roundId', element: <SampleRound /> },
-      { path: 'alerts', element: <Alerts /> },
-      { path: 'evaluation', element: <Evaluation /> },
-      { path: 'settings', element: <Settings /> },
+      { path: 'sample', element: <RoleGate allow={can.sample}><NewRound /></RoleGate> },
+      { path: 'rounds/:roundId', element: <Round /> },
+      { path: 'review', element: <RoleGate allow={can.review}><Review /></RoleGate> },
+      { path: 'evaluation', element: <RoleGate allow={can.evaluate}><Evaluation /></RoleGate> },
+      { path: 'maintenance', element: <RoleGate allow={can.admin}><Maintenance /></RoleGate> },
+      { path: 'faqs', element: <ContentPage contentKey="faqs" /> },
+      { path: 'about', element: <ContentPage contentKey="about" /> },
+      { path: 'profile', element: <Profile /> },
       { path: '*', element: <NotFound /> },
     ],
   },
@@ -33,8 +40,10 @@ const router = createBrowserRouter([
 
 createRoot(document.getElementById('root')).render(
   <React.StrictMode>
-    <ToastProvider>
-      <RouterProvider router={router} />
-    </ToastProvider>
+    <AuthProvider>
+      <ToastProvider>
+        <RouterProvider router={router} />
+      </ToastProvider>
+    </AuthProvider>
   </React.StrictMode>,
 );

@@ -1,12 +1,12 @@
-import { createContext, useContext, useEffect, useState } from 'react';
-import { NavLink, Link, Outlet } from 'react-router-dom';
+import { useEffect, useState } from 'react';
+import { Link, Navigate, NavLink, Outlet, useLocation } from 'react-router-dom';
 import {
-  Bell, Camera, ClipboardCheck, FlaskConical, LayoutDashboard, Moon, Settings, Sun, Info,
+  BookOpen, Camera, CircleHelp, ClipboardCheck, FlaskConical, Info, LayoutDashboard, LogOut, Moon,
+  Stethoscope, Sun, UserRound, Wrench,
 } from 'lucide-react';
 import { useResource } from '../lib/api';
-
-const SystemCtx = createContext({ system: null, unread: 0, reloadSystem: () => {} });
-export const useSystem = () => useContext(SystemCtx);
+import { can, ROLE_LABEL, useAuth } from '../lib/auth';
+import { Loading } from './ui';
 
 export function FishMark({ size = 20 }) {
   return (
@@ -18,7 +18,7 @@ export function FishMark({ size = 20 }) {
   );
 }
 
-function ThemeToggle() {
+export function ThemeToggle() {
   const [theme, setTheme] = useState(() => document.documentElement.getAttribute('data-theme') || 'light');
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
@@ -32,60 +32,72 @@ function ThemeToggle() {
   );
 }
 
+function navFor(user) {
+  const items = [{ to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true }];
+  if (can.sample(user)) items.push({ to: '/sample', label: 'Sample', icon: Camera });
+  if (can.review(user)) items.push({ to: '/review', label: 'Review', icon: Stethoscope, badge: true });
+  if (can.evaluate(user)) items.push({ to: '/evaluation', label: 'Evaluation', icon: FlaskConical });
+  if (can.admin(user)) items.push({ to: '/maintenance', label: 'Maintenance', icon: Wrench });
+  if (user.role === 'caretaker') items.push({ to: '/faqs', label: 'FAQs', icon: CircleHelp });
+  return items;
+}
+
 function SystemChips({ system }) {
   if (!system) return null;
-  const sensor = system.sensor || {};
-  let probe = { cls: 'bad', text: 'Probe: not connected' };
-  if (sensor.mode === 'simulate') probe = { cls: 'warn', text: 'Probe: simulated' };
-  else if (sensor.mode === 'off') probe = { cls: '', text: 'Probe: network ingest' };
-  else if (sensor.probe_port) probe = { cls: 'ok', text: `Probe: ${sensor.probe_port}` };
-  const det = system.detector?.is_stub ? { cls: 'warn', text: 'Detector: stub' } : { cls: 'ok', text: 'Detector: YOLO26' };
-  const ch = system.notifications;
-  const alerts = ch?.ready ? { cls: 'ok', text: `Alerts: ${ch.channel}` } : { cls: '', text: 'Alerts: dashboard only' };
+  const s = system.screener || {};
+  const chips = [
+    s.available ? { cls: 'ok', text: `Screening: ${s.name}` } : { cls: 'bad', text: 'Screening model unavailable' },
+    { cls: system.segmentation?.startsWith('yolo') ? 'ok' : 'warn', text: `Outline: ${system.segmentation}` },
+  ];
   return (
     <div className="syschips" aria-label="System status">
-      {[probe, det, alerts].map((c) => (
+      {chips.map((c) => (
         <span key={c.text} className={`syschip ${c.cls}`}><span className="dot" aria-hidden="true" />{c.text}</span>
       ))}
     </div>
   );
 }
 
-const NAV = [
-  { to: '/', label: 'Overview', icon: LayoutDashboard, end: true },
-  { to: '/sample', label: 'Sampling', icon: Camera },
-  { to: '/alerts', label: 'Alerts', icon: Bell, badge: true },
-  { to: '/evaluation', label: 'Evaluation', icon: FlaskConical },
-  { to: '/settings', label: 'Settings', icon: Settings },
-];
-
 export default function Shell() {
-  const { data: system, reload: reloadSystem } = useResource('/api/system', { interval: 15000 });
-  const { data: notes, reload: reloadUnread } = useResource('/api/notifications?limit=200', { interval: 10000 });
-  const unread = notes?.notifications?.filter((n) => !n.acknowledged).length || 0;
+  const { user, system, loading, logout } = useAuth();
+  const location = useLocation();
+  const queue = useResource(user && can.review(user) ? '/api/review/queue' : null, { interval: 30000 });
+  if (loading) return <div className="content"><Loading /></div>;
+  if (!user) return <Navigate to={`/login?next=${encodeURIComponent(location.pathname)}`} replace />;
+  const pending = queue.data ? queue.data.fish.length + queue.data.rounds.length : 0;
+  const NAV = navFor(user);
 
   return (
-    <SystemCtx.Provider value={{ system, unread, reloadSystem, reloadUnread }}>
+    <>
       <a href="#main" className="skip-link">Skip to content</a>
       <div className="shell">
         <aside className="sidebar" aria-label="Main navigation">
           <Link to="/" className="brand">
             <span className="brand-mark"><FishMark /></span>
-            <span>Tilapiers<small>Pond monitoring</small></span>
+            <span>Tilapiers<small>Fish health · weight · harvest</small></span>
           </Link>
           <nav className="sidenav">
             {NAV.map(({ to, label, icon: Icon, end, badge }) => (
               <NavLink key={to} to={to} end={end}>
                 <Icon size={19} aria-hidden="true" />
                 {label}
-                {badge && unread > 0 && <span className="nav-count" aria-label={`${unread} unread`}>{unread}</span>}
+                {badge && pending > 0 && <span className="nav-count" aria-label={`${pending} waiting`}>{pending}</span>}
               </NavLink>
             ))}
+            <span className="sidenav-label">Help</span>
+            {user.role !== 'caretaker' && (
+              <NavLink to="/faqs"><CircleHelp size={19} aria-hidden="true" />FAQs</NavLink>
+            )}
+            <NavLink to="/about"><BookOpen size={19} aria-hidden="true" />About Us</NavLink>
           </nav>
           <div className="sidebar-foot">
+            <Link to="/profile" className="user-chip">
+              <UserRound size={18} aria-hidden="true" />
+              <span>{user.full_name}<small>{ROLE_LABEL[user.role]}</small></span>
+            </Link>
             <span className="subtle">
-              <ClipboardCheck size={14} aria-hidden="true" style={{ verticalAlign: '-2px' }} /> Screening and decision support only.
-              Health and readiness are rule-based assessments, not diagnoses or forecasts.
+              <ClipboardCheck size={14} aria-hidden="true" style={{ verticalAlign: '-2px' }} /> Screening and
+              decision support only: not a diagnosis, and not a harvest decision.
             </span>
           </div>
         </aside>
@@ -94,7 +106,8 @@ export default function Shell() {
           {system?.demo && (
             <div className="demo-banner" role="note">
               <Info size={18} aria-hidden="true" />
-              <span><strong>Demo mode.</strong> Ponds, readings and fish are seeded or simulated for presentation; they are labeled as demo data throughout.</span>
+              <span><strong>Demo mode.</strong> The two seeded ponds and their past rounds are example data, labeled
+                “Demo data”. Photos you upload are processed for real.</span>
             </div>
           )}
           <header className="topbar">
@@ -105,6 +118,12 @@ export default function Shell() {
             <span className="topbar-spacer" />
             <SystemChips system={system} />
             <ThemeToggle />
+            <Link to="/profile" className="btn ghost icon topbar-user" aria-label={`Profile: ${user.full_name}`}>
+              <UserRound size={20} aria-hidden="true" />
+            </Link>
+            <button type="button" className="btn ghost icon" onClick={logout} aria-label="Log out">
+              <LogOut size={20} aria-hidden="true" />
+            </button>
           </header>
           <main id="main" className="content" tabIndex={-1}>
             <Outlet />
@@ -112,15 +131,22 @@ export default function Shell() {
         </div>
 
         <nav className="bottomnav" aria-label="Main navigation">
-          {NAV.map(({ to, label, icon: Icon, end, badge }) => (
+          {NAV.slice(0, 5).map(({ to, label, icon: Icon, end, badge }) => (
             <NavLink key={to} to={to} end={end}>
               <Icon size={22} aria-hidden="true" />
               <span>{label}</span>
-              {badge && unread > 0 && <span className="nav-badge" aria-label={`${unread} unread`}>{unread > 99 ? '99+' : unread}</span>}
+              {badge && pending > 0 && <span className="nav-badge" aria-label={`${pending} waiting`}>{pending > 99 ? '99+' : pending}</span>}
             </NavLink>
           ))}
         </nav>
       </div>
-    </SystemCtx.Provider>
+    </>
   );
+}
+
+/** Wraps a page that only some roles may open. */
+export function RoleGate({ allow, children }) {
+  const { user } = useAuth();
+  if (!allow(user)) return <Navigate to="/" replace />;
+  return children;
 }
