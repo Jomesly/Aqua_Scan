@@ -18,6 +18,7 @@ class Thresholds:
     k_max: float = 2.0
     pond_watch_share: float = 0.10  # share of fish Watch/Refer -> pond Watch
     pond_refer_share: float = 0.30  # share of fish Watch/Refer -> pond Refer (or any Refer fish)
+    min_screened_share: float = 0.70  # below this share of sampled fish screened -> pond health Insufficient data
 
     # --- Harvest readiness -----------------------------------------------------
     target_weight_g: float = 300.0
@@ -52,8 +53,15 @@ class Thresholds:
         return cls(**clean)
 
 
+FRACTIONS = ("det_conf", "referral_conf", "pond_watch_share", "pond_refer_share", "min_screened_share",
+             "approaching_share", "ready_share", "max_cv")
+POSITIVE = ("k_min", "k_max", "target_weight_g", "min_sgr", "culture_days_min", "culture_days_max", "lw_a", "lw_b",
+            "board_width_cm", "board_height_cm")
+MIN_INT = {"growth_poly_min_rounds": 3, "weight_fit_min_fish": 3}
+
 GROUPS = {
-    "health": ["det_conf", "referral_conf", "k_min", "k_max", "pond_watch_share", "pond_refer_share"],
+    "health": ["det_conf", "referral_conf", "k_min", "k_max", "pond_watch_share", "pond_refer_share",
+               "min_screened_share"],
     "harvest": ["target_weight_g", "approaching_share", "ready_share", "max_cv", "min_sgr",
                 "culture_days_min", "culture_days_max", "growth_poly_min_rounds"],
     "weight": ["lw_a", "lw_b", "weight_fit_min_fish"],
@@ -67,6 +75,7 @@ LABELS = {
     "k_max": "Condition factor K, upper limit",
     "pond_watch_share": "Pond Watch: share of fish Watch/Refer",
     "pond_refer_share": "Pond Refer: share of fish Watch/Refer",
+    "min_screened_share": "Minimum share of sampled fish screened",
     "target_weight_g": "Target market size (g)",
     "approaching_share": "Share at target for Approaching",
     "ready_share": "Share at target for Ready",

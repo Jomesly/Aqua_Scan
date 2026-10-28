@@ -144,7 +144,7 @@ export default function Evaluation() {
         </Card>
       )}
 
-      <Card title="Screening vs technician" icon={Stethoscope} hint={`${data.screening.n_reviewed} fish checked by the technician`}>
+      <Card title="Screening vs technician" icon={Stethoscope} hint={`${data.screening.n_reviewed} fish checked by the technician. Only checked fish count. Fish checked from the review queue were flagged by the system, so also check a sample of Normal fish on each round's page to measure missed signs.`}>
         <div className="stats three">
           <Stat label="Accuracy (3 classes)" value={fmtPct(data.screening.accuracy, 1)} />
           <Stat label="Recall of Refer (fish)" value={fmtPct(data.screening.fish_refer_recall, 1)} title="Share of fish the technician saw signs on that the system referred" />

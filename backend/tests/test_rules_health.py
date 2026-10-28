@@ -60,3 +60,15 @@ def test_pond_thirty_percent_watch_refers():
 
 def test_pond_without_screened_fish_is_insufficient():
     assert health.pond_status([health.UNSCREENED], T)["status"] == health.INSUFFICIENT
+
+
+def test_pond_mostly_unscreened_is_insufficient():
+    s = [health.UNSCREENED] * 19 + [health.NORMAL]
+    r = health.pond_status(s, T)
+    assert r["status"] == health.INSUFFICIENT
+    assert r["screened_share"] == 0.05
+
+
+def test_pond_enough_screened_is_assessed():
+    s = [health.UNSCREENED] * 2 + [health.NORMAL] * 8
+    assert health.pond_status(s, T)["status"] == health.NORMAL

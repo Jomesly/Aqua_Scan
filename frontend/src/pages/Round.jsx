@@ -101,7 +101,8 @@ function FishCapture({ fish, onChange, onDelete, boardMode }) {
       </div>
       {fish.photos.some((p) => p.ok) && (
         <div className="fish-result">
-          <div className="row wrap gap-s">{fish.cls && <ClassBadge cls={fish.cls} conf={fish.conf} />}<HealthBadge value={fish.status} /></div>
+          <div className="row wrap gap-s">{fish.cls && <ClassBadge cls={fish.cls} conf={fish.conf} />}<HealthBadge value={fish.status} />
+            <span className={`tag ${fish.sides === 2 ? 'good' : 'warn'}`}>{fish.sides} of 2 photos</span></div>
           {boardMode && <Measure fish={fish} />}
           <ul className="reasons">{fish.reasons.map((r) => <li key={r}>{r}</li>)}</ul>
         </div>
@@ -212,12 +213,30 @@ function TechAssessment({ round, onSaved }) {
   );
 }
 
+function TechSigns({ fish, onSaved }) {
+  const [busy, setBusy] = useState(false);
+  const save = async (signs) => {
+    if (!signs) return;
+    setBusy(true);
+    try { await api.post(`/api/fish/${fish.id}/review`, { signs, note: fish.tech_note }); onSaved(); } finally { setBusy(false); }
+  };
+  return (
+    <select className="select sm" aria-label={`Technician check of fish ${fish.code}`} disabled={busy}
+      value={fish.tech_signs || ''} onChange={(e) => save(e.target.value)}>
+      <option value="">Not checked</option>
+      {Object.entries(SIGNS_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+    </select>
+  );
+}
+
 function Results({ round, reload, user }) {
   return (
     <div className="stack">
       <RoundAssessment a={round.assessment} />
       {can.review(user) && <TechAssessment round={round} onSaved={reload} />}
-      <Card title="Sampled fish" flush hint="Screening shows visible signs only. It is not a diagnosis.">
+      <Card title="Sampled fish" flush hint={can.review(user)
+        ? 'Screening shows visible signs only. It is not a diagnosis. Record your check of any fish, not only the flagged ones, so the evaluation also counts the fish the system called Normal.'
+        : 'Screening shows visible signs only. It is not a diagnosis.'}>
         <div className="table-wrap">
           <table className="data">
             <thead>
@@ -236,6 +255,7 @@ function Results({ round, reload, user }) {
                         </a>
                       )) : <span className="thumb-ph" title="No photos (demo data)"><ImageOff size={16} aria-hidden="true" /></span>}
                     </div>
+                    {f.photos.length > 0 && <span className="xs subtle">{f.sides} of 2 photos</span>}
                   </td>
                   <td>{f.cls ? <ClassBadge cls={f.cls} conf={f.conf} /> : <span className="subtle">—</span>}</td>
                   <td><HealthBadge value={f.status} /></td>
@@ -244,7 +264,11 @@ function Results({ round, reload, user }) {
                   <td className="num">{fmtNum(f.scale_weight_g, 0)}</td>
                   <td className="num">{fmtNum(f.ruler_length_cm)}</td>
                   <td className="num">{fmtNum(f.k, 2)}</td>
-                  <td className="small">{f.tech_signs ? SIGNS_LABEL[f.tech_signs] : <span className="subtle">—</span>}</td>
+                  <td className="small">
+                    {can.review(user)
+                      ? <TechSigns fish={f} onSaved={reload} />
+                      : f.tech_signs ? SIGNS_LABEL[f.tech_signs] : <span className="subtle">—</span>}
+                  </td>
                 </tr>
               ))}
             </tbody>

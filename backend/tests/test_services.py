@@ -90,3 +90,11 @@ def test_threshold_history_records_changes(svc):
     assert meta["values"]["target_weight_g"] == 280
     assert meta["confirmed"] is True
     assert meta["history"][0]["changes"]["target_weight_g"] == [300.0, 280.0]
+
+
+@pytest.mark.parametrize("changes", [{"det_conf": 5}, {"ready_share": 2}, {"min_screened_share": -0.1},
+                                     {"target_weight_g": 0}, {"det_conf": "abc"}])
+def test_out_of_range_cutoffs_rejected(svc, changes):
+    from tilapiers.services import Invalid
+    with pytest.raises(Invalid):
+        svc.update_thresholds(changes, "admin")

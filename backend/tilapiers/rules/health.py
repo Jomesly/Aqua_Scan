@@ -46,10 +46,13 @@ def fish_status(cls, conf, k, t=Thresholds()):
 
 
 def pond_status(statuses, t=Thresholds()):
+    total = len(statuses)
     screened = [s for s in statuses if s in (NORMAL, WATCH, REFER)]
     n = len(screened)
-    if n == 0:
-        return {"status": INSUFFICIENT, "n": 0, "watch_share": None, "refer_count": 0}
+    share_screened = round(n / total, 4) if total else 0.0
+    if n == 0 or share_screened < t.min_screened_share:
+        return {"status": INSUFFICIENT, "n": n, "watch_share": None, "refer_count": 0,
+                "screened_share": share_screened}
     refer = sum(1 for s in screened if s == REFER)
     flagged = sum(1 for s in screened if s in (WATCH, REFER))
     share = flagged / n
@@ -59,4 +62,5 @@ def pond_status(statuses, t=Thresholds()):
         status = WATCH
     else:
         status = NORMAL
-    return {"status": status, "n": n, "watch_share": round(share, 4), "refer_count": refer}
+    return {"status": status, "n": n, "watch_share": round(share, 4), "refer_count": refer,
+            "screened_share": share_screened}

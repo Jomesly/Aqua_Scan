@@ -182,7 +182,7 @@ const GROUP_TITLES = {
   weight: 'Weight estimation',
   board: 'Sampling board',
 };
-const PERCENT_KEYS = ['det_conf', 'referral_conf', 'pond_watch_share', 'pond_refer_share', 'approaching_share', 'ready_share', 'max_cv'];
+const PERCENT_KEYS = ['det_conf', 'referral_conf', 'pond_watch_share', 'pond_refer_share', 'min_screened_share', 'approaching_share', 'ready_share', 'max_cv'];
 
 function Cutoffs() {
   const { data, error, loading, reload } = useResource('/api/thresholds');

@@ -61,7 +61,8 @@ export function RoundAssessment({ a, live }) {
           </div>
           <p className="subtle" style={{ marginTop: 8 }}>
             Pond is Watch at {fmtPct(a.thresholds.pond_watch_share)} of fish Watch or Refer, and Refer at
-            {' '}{fmtPct(a.thresholds.pond_refer_share)} or any referred fish.
+            {' '}{fmtPct(a.thresholds.pond_refer_share)} or any referred fish. At least
+            {' '}{fmtPct(a.thresholds.min_screened_share)} of sampled fish must be screened; otherwise “No data”.
           </p>
         </Card>
         <Card title="Harvest readiness" hint={`${a.readiness.met ?? 0} of 5 indicators met`}>

@@ -17,7 +17,7 @@ import cv2
 from . import auth
 from .rules import evaluation as ev
 from .rules import harvest, health, weight
-from .rules.thresholds import GROUPS, LABELS, Thresholds
+from .rules.thresholds import FRACTIONS, GROUPS, LABELS, MIN_INT, POSITIVE, Thresholds
 from .vision import pipeline, quality
 
 SIDES = ("A", "B")
@@ -69,7 +69,21 @@ class Services:
     def update_thresholds(self, changes, user, confirmed=None):
         old = self.thresholds()
         merged = {**old.to_dict(), **{k: v for k, v in (changes or {}).items() if k in old.to_dict()}}
-        new = Thresholds.from_dict(merged)
+        try:
+            new = Thresholds.from_dict(merged)
+        except (TypeError, ValueError) as exc:
+            raise Invalid("Every cutoff must be a number (whole numbers for round and fish counts).") from exc
+        for k in FRACTIONS:
+            if not 0 <= getattr(new, k) <= 1:
+                raise Invalid(f"{LABELS[k]} must be between 0 and 1.")
+        for k in POSITIVE:
+            if getattr(new, k) <= 0:
+                raise Invalid(f"{LABELS[k]} must be above 0.")
+        for k, low in MIN_INT.items():
+            if getattr(new, k) < low:
+                raise Invalid(f"{LABELS[k]} must be at least {low}.")
+        if new.culture_days_min > new.culture_days_max:
+            raise Invalid("The usual culture period must start before it ends.")
         if new.k_min >= new.k_max:
             raise Invalid("K lower limit must be below the upper limit.")
         if new.approaching_share > new.ready_share:
