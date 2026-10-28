@@ -6,117 +6,99 @@ import threading
 import time
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL UNIQUE,
+    full_name TEXT,
+    role TEXT NOT NULL CHECK (role IN ('caretaker', 'technician', 'admin')),
+    pw_hash TEXT NOT NULL,
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS ponds (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
     location TEXT,
-    area_m2 REAL,
-    stocked_at REAL NOT NULL,
+    setup TEXT,
+    stocked_at TEXT,
     stocked_count INTEGER,
-    feeding_regime TEXT,
-    notes TEXT,
     archived INTEGER NOT NULL DEFAULT 0,
+    source TEXT NOT NULL DEFAULT 'real',
     created_at REAL NOT NULL
 );
-CREATE TABLE IF NOT EXISTS temperature_readings (
+CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value_json TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS threshold_history (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    pond_id INTEGER NOT NULL REFERENCES ponds(id),
     ts REAL NOT NULL,
-    temperature_c REAL NOT NULL,
-    source TEXT NOT NULL            -- probe-serial | probe-http | simulated | seed
+    user TEXT,
+    changes_json TEXT NOT NULL,
+    confirmed INTEGER NOT NULL DEFAULT 0
 );
-CREATE INDEX IF NOT EXISTS idx_temp_pond_ts ON temperature_readings(pond_id, ts);
-
-CREATE TABLE IF NOT EXISTS observations (
+CREATE TABLE IF NOT EXISTS weight_models (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at REAL NOT NULL,
+    created_by TEXT,
+    kind TEXT NOT NULL,
+    model_json TEXT NOT NULL,
+    fit_json TEXT,
+    includes_demo INTEGER NOT NULL DEFAULT 0,
+    active INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS rounds (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     pond_id INTEGER NOT NULL REFERENCES ponds(id),
-    ts REAL NOT NULL,
-    algae_seen INTEGER NOT NULL,
-    do_ppm REAL,
-    ph REAL,
-    ammonia_ppm REAL,
-    nitrate_ppm REAL,
-    notes TEXT,
-    recorded_by TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_obs_pond_ts ON observations(pond_id, ts);
-
-CREATE TABLE IF NOT EXISTS sampling_rounds (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    pond_id INTEGER NOT NULL REFERENCES ponds(id),
-    sampled_at REAL NOT NULL,
+    sampled_at TEXT NOT NULL,
     days_of_culture REAL,
-    capture_condition TEXT,         -- open sunlight | shade | overcast
-    time_of_day TEXT,
-    weather TEXT,
-    phone_model TEXT,
+    fish_count_n INTEGER,
+    board_mode INTEGER NOT NULL DEFAULT 1,
+    capture_condition TEXT,
     notes TEXT,
     status TEXT NOT NULL DEFAULT 'draft',
-    completed_at REAL,
     snapshot_json TEXT,
-    technician_health TEXT,
-    technician_readiness TEXT,
+    completed_at REAL,
+    tech_health TEXT,
+    tech_readiness TEXT,
+    tech_by TEXT,
+    created_by TEXT,
+    source TEXT NOT NULL DEFAULT 'real',
     created_at REAL NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_round_pond ON sampling_rounds(pond_id, sampled_at);
-
 CREATE TABLE IF NOT EXISTS fish (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    round_id INTEGER NOT NULL REFERENCES sampling_rounds(id) ON DELETE CASCADE,
-    seq INTEGER NOT NULL,
-    weight_g REAL,
+    round_id INTEGER NOT NULL REFERENCES rounds(id) ON DELETE CASCADE,
+    code TEXT NOT NULL,
+    scale_weight_g REAL,
+    ruler_length_cm REAL,
+    cls TEXT,
+    conf REAL,
+    sides INTEGER NOT NULL DEFAULT 0,
     length_cm REAL,
-    photo_path TEXT,
-    image_length_cm REAL,
-    condition_factor REAL,
-    gill_color_index REAL,
-    skin_color_index REAL,
-    fin_integrity REAL,
-    eye_clarity REAL,
-    body_shape REAL,
-    fci REAL,
-    flagged INTEGER NOT NULL DEFAULT 0,
-    technician_score REAL,
-    quality_json TEXT,
-    detection_json TEXT,
-    analysis_source TEXT NOT NULL,  -- photo | manual | seed
+    area_cm2 REAL,
+    est_weight_g REAL,
+    k REAL,
+    status TEXT,
+    reasons_json TEXT,
+    tech_signs TEXT,
+    tech_note TEXT,
+    reviewed_by TEXT,
+    reviewed_at REAL,
+    source TEXT NOT NULL DEFAULT 'real',
+    created_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS photos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    fish_id INTEGER NOT NULL REFERENCES fish(id) ON DELETE CASCADE,
+    side TEXT NOT NULL,
+    path TEXT NOT NULL,
+    annotated_path TEXT,
+    ok INTEGER NOT NULL,
+    current INTEGER NOT NULL DEFAULT 1,
+    result_json TEXT,
     created_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_fish_round ON fish(round_id);
-
-CREATE TABLE IF NOT EXISTS notifications (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    ts REAL NOT NULL,
-    pond_id INTEGER,
-    kind TEXT NOT NULL,             -- environment | probe | health | harvest
-    severity TEXT NOT NULL,         -- critical | warning | info
-    title TEXT NOT NULL,
-    message TEXT NOT NULL,
-    deliveries_json TEXT NOT NULL,  -- [{channel, status, detail, at}]
-    acknowledged INTEGER NOT NULL DEFAULT 0
-);
-CREATE INDEX IF NOT EXISTS idx_notif_ts ON notifications(ts);
-
-CREATE TABLE IF NOT EXISTS probe_calibrations (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    pond_id INTEGER,
-    ts REAL NOT NULL,
-    probe_c REAL NOT NULL,
-    reference_c REAL NOT NULL,
-    notes TEXT
-);
-
-CREATE TABLE IF NOT EXISTS env_state (
-    pond_id INTEGER PRIMARY KEY,
-    state TEXT NOT NULL,
-    since_ts REAL NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS settings (
-    key TEXT PRIMARY KEY,
-    value_json TEXT NOT NULL,
-    updated_at REAL NOT NULL
-);
+CREATE INDEX IF NOT EXISTS idx_photos_fish ON photos(fish_id);
+CREATE TABLE IF NOT EXISTS content (key TEXT PRIMARY KEY, title TEXT, body_md TEXT, updated_at REAL);
 """
 
 
@@ -124,60 +106,49 @@ class Database:
     def __init__(self, path):
         self.path = str(path)
         self._lock = threading.RLock()
-        self._conn = sqlite3.connect(self.path, check_same_thread=False)
-        self._conn.row_factory = sqlite3.Row
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute("PRAGMA foreign_keys=ON")
-        self._conn.executescript(SCHEMA)
-        self._conn.commit()
+        self.conn = sqlite3.connect(self.path, check_same_thread=False)
+        self.conn.row_factory = sqlite3.Row
+        self.conn.execute("PRAGMA journal_mode=WAL")
+        self.conn.execute("PRAGMA foreign_keys=ON")
+        self.conn.executescript(SCHEMA)
+        self.conn.commit()
 
-    def query(self, sql, params=()):
+    def all(self, sql, params=()):
         with self._lock:
-            return [dict(r) for r in self._conn.execute(sql, params).fetchall()]
+            return [dict(r) for r in self.conn.execute(sql, params).fetchall()]
 
     def one(self, sql, params=()):
-        rows = self.query(sql, params)
-        return rows[0] if rows else None
-
-    def scalar(self, sql, params=()):
         with self._lock:
-            row = self._conn.execute(sql, params).fetchone()
-            return row[0] if row else None
+            row = self.conn.execute(sql, params).fetchone()
+            return dict(row) if row else None
 
-    def execute(self, sql, params=()):
+    def run(self, sql, params=()):
         with self._lock:
-            cur = self._conn.execute(sql, params)
-            self._conn.commit()
+            cur = self.conn.execute(sql, params)
+            self.conn.commit()
             return cur.lastrowid
 
-    def executemany(self, sql, rows):
-        with self._lock:
-            self._conn.executemany(sql, rows)
-            self._conn.commit()
-
     def insert(self, table, values):
+        values = {"created_at": time.time(), **values} if table not in ("settings", "content", "threshold_history") \
+            else values
         cols = ", ".join(values)
         marks = ", ".join("?" for _ in values)
-        return self.execute(f"INSERT INTO {table} ({cols}) VALUES ({marks})", tuple(values.values()))
+        return self.run(f"INSERT INTO {table} ({cols}) VALUES ({marks})", tuple(values.values()))
 
     def update(self, table, row_id, values):
         if not values:
             return
-        sets = ", ".join(f"{k}=?" for k in values)
-        self.execute(f"UPDATE {table} SET {sets} WHERE id=?", (*values.values(), row_id))
+        sets = ", ".join(f"{k} = ?" for k in values)
+        self.run(f"UPDATE {table} SET {sets} WHERE id = ?", (*values.values(), row_id))
 
-    # settings ---------------------------------------------------------------
     def get_setting(self, key, default=None):
-        row = self.one("SELECT value_json FROM settings WHERE key=?", (key,))
+        row = self.one("SELECT value_json FROM settings WHERE key = ?", (key,))
         return json.loads(row["value_json"]) if row else default
 
     def set_setting(self, key, value):
-        self.execute(
-            "INSERT INTO settings (key, value_json, updated_at) VALUES (?,?,?) "
-            "ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json, updated_at=excluded.updated_at",
-            (key, json.dumps(value), time.time()),
-        )
+        self.run("INSERT INTO settings (key, value_json) VALUES (?, ?) "
+                 "ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json", (key, json.dumps(value)))
 
     def close(self):
         with self._lock:
-            self._conn.close()
+            self.conn.close()

@@ -1,523 +1,686 @@
-"""Domain services: everything the API and the background monitor need, built on
-the pure rules and the database."""
+"""Domain services: sampling rounds, per-fish processing, statuses, maintenance,
+evaluation and backups, on top of the pure rules and the database."""
 
+import csv
 import io
 import json
+import shutil
+import sqlite3
+import tempfile
 import time
-import uuid
-from datetime import datetime
+import zipfile
+from datetime import date, datetime
+from pathlib import Path
 
-from .rules import environment as env_rules
-from .rules import evaluation as eval_rules
-from .rules import harvest as harvest_rules
-from .rules import health as health_rules
-from .rules.environment import PH_TZ
-from .rules.thresholds import Thresholds
+import cv2
 
-DAY = 86400.0
+from . import auth
+from .rules import evaluation as ev
+from .rules import harvest, health, weight
+from .rules.thresholds import GROUPS, LABELS, Thresholds
+from .vision import pipeline, quality
 
-HEALTH_LABELS = ["Normal", "Watch", "Refer to technician"]
-READINESS_LABELS = [harvest_rules.NOT_READY, harvest_rules.APPROACHING, harvest_rules.READY]
+SIDES = ("A", "B")
+TECH_SIGNS = ("none", "aeromonas", "tilv", "other")
+HEALTH_LABELS = [health.NORMAL, health.WATCH, health.REFER]
+READY_LABELS = [harvest.NOT_READY, harvest.APPROACHING, harvest.READY]
 
 
 class NotFound(Exception):
     pass
 
 
-def fmt_ts(ts):
-    return datetime.fromtimestamp(ts, PH_TZ).isoformat(timespec="seconds") if ts else None
+class Invalid(Exception):
+    pass
 
 
-def time_of_day(ts):
-    h = datetime.fromtimestamp(ts, PH_TZ).hour
-    if h < 10:
-        return "Morning"
-    if h < 14:
-        return "Midday"
-    if h < 18:
-        return "Afternoon"
-    return "Evening"
+def _today():
+    return date.today().isoformat()
+
+
+def _days_between(start_iso, end_iso):
+    try:
+        return (datetime.fromisoformat(end_iso[:10]) - datetime.fromisoformat(start_iso[:10])).days
+    except (TypeError, ValueError):
+        return None
 
 
 class Services:
-    def __init__(self, db, settings, notifier, detector):
+    def __init__(self, db, settings, screener, seg_model=None):
         self.db = db
         self.settings = settings
-        self.notifier = notifier
-        self.detector = detector
+        self.screener = screener
+        self.seg_model = seg_model
+        settings.uploads_dir.mkdir(parents=True, exist_ok=True)
 
-    # ------------------------------------------------------------- settings
+    # ------------------------------------------------------------------ cutoffs
     def thresholds(self):
         return Thresholds.from_dict(self.db.get_setting("thresholds", {}))
 
-    def set_thresholds(self, values):
-        current = self.thresholds().to_dict()
-        current.update({k: v for k, v in values.items() if k in current and v is not None})
-        t = Thresholds.from_dict(current)
-        if t.temp_min_c >= t.temp_max_c:
-            raise ValueError("Minimum temperature must be below maximum.")
-        if not (0 <= t.health_watch_share <= t.health_refer_share <= 1):
-            raise ValueError("Watch share must not exceed the Refer share (both 0-1).")
-        if not (0 <= t.approaching_share_at_target <= t.ready_share_at_target <= 1):
-            raise ValueError("Approaching share must not exceed the Ready share (both 0-1).")
-        self.db.set_setting("thresholds", t.to_dict())
-        return t
+    def thresholds_meta(self):
+        hist = self.db.all("SELECT * FROM threshold_history ORDER BY id DESC LIMIT 100")
+        for h in hist:
+            h["changes"] = json.loads(h.pop("changes_json"))
+            h["confirmed"] = bool(h["confirmed"])
+        return {"values": self.thresholds().to_dict(), "defaults": Thresholds().to_dict(), "groups": GROUPS,
+                "labels": LABELS, "confirmed": bool(self.db.get_setting("thresholds_confirmed", False)),
+                "history": hist}
 
-    def fci_model(self):
-        return self.db.get_setting("fci_model") or health_rules.DEFAULT_FCI_MODEL
+    def update_thresholds(self, changes, user, confirmed=None):
+        old = self.thresholds()
+        merged = {**old.to_dict(), **{k: v for k, v in (changes or {}).items() if k in old.to_dict()}}
+        new = Thresholds.from_dict(merged)
+        if new.k_min >= new.k_max:
+            raise Invalid("K lower limit must be below the upper limit.")
+        if new.approaching_share > new.ready_share:
+            raise Invalid("The Approaching share cannot be above the Ready share.")
+        if new.pond_watch_share > new.pond_refer_share:
+            raise Invalid("The pond Watch share cannot be above the pond Refer share.")
+        if min(new.board_width_cm, new.board_height_cm) <= 0:
+            raise Invalid("Board size must be positive.")
+        diff = {k: [getattr(old, k), getattr(new, k)] for k in merged if getattr(old, k) != getattr(new, k)}
+        self.db.set_setting("thresholds", new.to_dict())
+        if confirmed is not None:
+            self.db.set_setting("thresholds_confirmed", bool(confirmed))
+        if diff or confirmed is not None:
+            self.db.insert("threshold_history", {"ts": time.time(), "user": user, "changes_json": json.dumps(diff),
+                                                 "confirmed": int(bool(confirmed))})
+        self.refresh_drafts()
+        return self.thresholds_meta()
 
-    # ---------------------------------------------------------------- ponds
-    def list_ponds(self, include_archived=False):
-        sql = "SELECT * FROM ponds" + ("" if include_archived else " WHERE archived=0") + " ORDER BY id"
-        return self.db.query(sql)
+    # ------------------------------------------------------------------ users
+    def create_user(self, data):
+        username = (data.get("username") or "").strip().lower()
+        if not username or len(data.get("password") or "") < 6:
+            raise Invalid("Username is required and the password needs at least 6 characters.")
+        if data.get("role") not in auth.ROLES:
+            raise Invalid("Role must be caretaker, technician or admin.")
+        if self.db.one("SELECT id FROM users WHERE username = ?", (username,)):
+            raise Invalid("That username is taken.")
+        uid = self.db.insert("users", {"username": username, "full_name": data.get("full_name") or username,
+                                       "role": data["role"], "pw_hash": auth.hash_password(data["password"])})
+        return self.get_user(uid)
 
-    def get_pond(self, pond_id):
-        pond = self.db.one("SELECT * FROM ponds WHERE id=?", (pond_id,))
-        if not pond:
-            raise NotFound(f"Pond {pond_id} not found")
-        return pond
+    def get_user(self, uid):
+        u = self.db.one("SELECT id, username, full_name, role, active, created_at FROM users WHERE id = ?", (uid,))
+        if not u:
+            raise NotFound("User not found")
+        u["active"] = bool(u["active"])
+        return u
 
-    def create_pond(self, data):
-        return self.db.insert("ponds", {
-            "name": data["name"].strip(), "location": data.get("location"),
-            "area_m2": data.get("area_m2"), "stocked_at": data["stocked_at"],
-            "stocked_count": data.get("stocked_count"), "feeding_regime": data.get("feeding_regime"),
-            "notes": data.get("notes"), "created_at": time.time(),
-        })
+    def list_users(self):
+        return [self.get_user(u["id"]) for u in self.db.all("SELECT id FROM users ORDER BY role, username")]
+
+    def authenticate(self, username, password):
+        u = self.db.one("SELECT * FROM users WHERE username = ? AND active = 1", ((username or "").strip().lower(),))
+        if not u or not auth.verify_password(password or "", u["pw_hash"]):
+            return None
+        return self.get_user(u["id"])
+
+    def update_user(self, uid, data, acting_user_id):
+        user = self.get_user(uid)
+        values = {}
+        if "full_name" in data:
+            values["full_name"] = data["full_name"]
+        if "role" in data:
+            if data["role"] not in auth.ROLES:
+                raise Invalid("Unknown role.")
+            values["role"] = data["role"]
+        if "active" in data:
+            values["active"] = int(bool(data["active"]))
+        if data.get("password"):
+            if len(data["password"]) < 6:
+                raise Invalid("The password needs at least 6 characters.")
+            values["pw_hash"] = auth.hash_password(data["password"])
+        demoting = user["role"] == "admin" and (values.get("role", "admin") != "admin" or values.get("active") == 0)
+        if demoting:
+            admins = self.db.one("SELECT COUNT(*) n FROM users WHERE role = 'admin' AND active = 1")["n"]
+            if admins <= 1:
+                raise Invalid("At least one active administrator must remain.")
+        if uid == acting_user_id and values.get("active") == 0:
+            raise Invalid("You cannot deactivate your own account.")
+        self.db.update("users", uid, values)
+        return self.get_user(uid)
+
+    def change_password(self, uid, old, new):
+        u = self.db.one("SELECT * FROM users WHERE id = ?", (uid,))
+        if not u or not auth.verify_password(old or "", u["pw_hash"]):
+            raise Invalid("Current password is incorrect.")
+        if len(new or "") < 6:
+            raise Invalid("The new password needs at least 6 characters.")
+        self.db.update("users", uid, {"pw_hash": auth.hash_password(new)})
+
+    # ------------------------------------------------------------------ ponds
+    POND_FIELDS = ("name", "location", "setup", "stocked_at", "stocked_count", "archived")
+
+    def create_pond(self, data, source="real"):
+        if not (data.get("name") or "").strip():
+            raise Invalid("Pond name is required.")
+        values = {k: data.get(k) for k in self.POND_FIELDS if k in data}
+        values["archived"] = int(bool(values.get("archived", 0)))
+        return self.get_pond(self.db.insert("ponds", {**values, "source": source}))
 
     def update_pond(self, pond_id, data):
         self.get_pond(pond_id)
-        allowed = {"name", "location", "area_m2", "stocked_at", "stocked_count", "feeding_regime", "notes", "archived"}
-        self.db.update("ponds", pond_id, {k: v for k, v in data.items() if k in allowed})
+        values = {k: data[k] for k in self.POND_FIELDS if k in data}
+        if "archived" in values:
+            values["archived"] = int(bool(values["archived"]))
+        self.db.update("ponds", pond_id, values)
         return self.get_pond(pond_id)
 
-    def days_of_culture(self, pond, ts=None):
-        return round(((ts or time.time()) - pond["stocked_at"]) / DAY, 1)
+    def get_pond(self, pond_id):
+        p = self.db.one("SELECT * FROM ponds WHERE id = ?", (pond_id,))
+        if not p:
+            raise NotFound("Pond not found")
+        p["archived"] = bool(p["archived"])
+        return p
 
-    # ---------------------------------------------------------- temperature
-    def record_reading(self, pond_id, temp_c, source, ts=None):
-        self.db.insert("temperature_readings", {
-            "pond_id": pond_id, "ts": ts or time.time(), "temperature_c": float(temp_c), "source": source,
-        })
+    def list_ponds(self, include_archived=False):
+        sql = "SELECT id FROM ponds" + ("" if include_archived else " WHERE archived = 0") + " ORDER BY name"
+        return [self.get_pond(r["id"]) for r in self.db.all(sql)]
 
-    def record_readings(self, pond_id, readings, source):
-        rows = [(pond_id, float(r["ts"]), float(r["temperature_c"]), source) for r in readings]
-        self.db.executemany(
-            "INSERT INTO temperature_readings (pond_id, ts, temperature_c, source) VALUES (?,?,?,?)", rows)
-        return len(rows)
-
-    def latest_reading(self, pond_id):
-        return self.db.one(
-            "SELECT ts, temperature_c, source FROM temperature_readings WHERE pond_id=? ORDER BY ts DESC LIMIT 1",
-            (pond_id,))
-
-    def temperature_history(self, pond_id, hours=24, max_points=360):
-        end = time.time()
-        start = end - hours * 3600
-        bucket = max(hours * 3600 / max_points, 1)
-        rows = self.db.query(
-            "SELECT CAST(ts / ? AS INTEGER) AS b, MIN(ts) AS ts, AVG(temperature_c) AS avg_c, "
-            "MIN(temperature_c) AS min_c, MAX(temperature_c) AS max_c, "
-            "SUM(source = 'simulated' OR source = 'seed') AS synthetic, COUNT(*) AS n "
-            "FROM temperature_readings WHERE pond_id=? AND ts>=? GROUP BY b ORDER BY b",
-            (bucket, pond_id, start))
-        return [{
-            "ts": r["ts"], "temperature_c": round(r["avg_c"], 2),
-            "min_c": round(r["min_c"], 2), "max_c": round(r["max_c"], 2),
-            "synthetic": r["synthetic"] == r["n"],
-        } for r in rows]
-
-    def readings_between(self, pond_id, start, end):
-        rows = self.db.query(
-            "SELECT ts, temperature_c FROM temperature_readings WHERE pond_id=? AND ts BETWEEN ? AND ? ORDER BY ts",
-            (pond_id, start, end))
-        return [(r["ts"], r["temperature_c"]) for r in rows]
-
-    def critical_between(self, pond_id, start, end, t):
-        lo = t.temp_min_c - t.temp_moderate_margin_c
-        hi = t.temp_max_c + t.temp_moderate_margin_c
-        n = self.db.scalar(
-            "SELECT COUNT(*) FROM temperature_readings WHERE pond_id=? AND ts BETWEEN ? AND ? "
-            "AND (temperature_c < ? OR temperature_c > ?)", (pond_id, start, end, lo, hi))
-        do_bad = self.db.scalar(
-            "SELECT COUNT(*) FROM observations WHERE pond_id=? AND ts BETWEEN ? AND ? AND do_ppm IS NOT NULL "
-            "AND do_ppm < ?", (pond_id, start, end, t.do_critical_below_ppm))
-        return (n or 0) > 0 or (do_bad or 0) > 0
-
-    # ---------------------------------------------------------- observations
-    def add_observation(self, pond_id, data):
-        self.get_pond(pond_id)
-        return self.db.insert("observations", {
-            "pond_id": pond_id, "ts": data.get("ts") or time.time(),
-            "algae_seen": 1 if data["algae_seen"] else 0,
-            "do_ppm": data.get("do_ppm"), "ph": data.get("ph"),
-            "ammonia_ppm": data.get("ammonia_ppm"), "nitrate_ppm": data.get("nitrate_ppm"),
-            "notes": data.get("notes"), "recorded_by": data.get("recorded_by"),
-        })
-
-    def observations(self, pond_id, limit=30):
-        rows = self.db.query("SELECT * FROM observations WHERE pond_id=? ORDER BY ts DESC LIMIT ?", (pond_id, limit))
-        for r in rows:
-            r["algae_seen"] = bool(r["algae_seen"])
-        return rows
-
-    # ------------------------------------------------------- environment now
-    def environment_now(self, pond_id, t=None):
-        t = t or self.thresholds()
-        now = time.time()
-        reading = self.latest_reading(pond_id)
-        stale = reading is None or now - reading["ts"] > t.sensor_stale_after_s
-        obs = self.db.one("SELECT * FROM observations WHERE pond_id=? ORDER BY ts DESC LIMIT 1", (pond_id,))
-        algae_active = bool(obs and obs["algae_seen"] and now - obs["ts"] <= t.algae_report_valid_days * DAY)
-        do_ppm = obs["do_ppm"] if obs and now - obs["ts"] <= DAY else None
-        temp = None if stale else reading["temperature_c"]
-        assessment = env_rules.classify_environment(temp, algae_seen=algae_active, do_ppm=do_ppm, thresholds=t)
-        if obs:
-            obs = dict(obs, algae_seen=bool(obs["algae_seen"]))
-        return {
-            "pond_id": pond_id,
-            "temperature_c": reading["temperature_c"] if reading else None,
-            "reading_ts": reading["ts"] if reading else None,
-            "source": reading["source"] if reading else None,
-            "stale": stale,
-            "direction": env_rules.temperature_direction(temp, t),
-            "state": assessment.state,
-            "reasons": assessment.reasons,
-            "season": env_rules.season_for(now),
-            "algae_active": algae_active,
-            "latest_observation": obs,
-            "band": {"min_c": t.temp_min_c, "max_c": t.temp_max_c, "moderate_margin_c": t.temp_moderate_margin_c},
-        }
-
-    def evaluate_environment(self, pond_id):
-        """Called by the monitor every tick: notify on state transitions only."""
-        pond = self.db.one("SELECT name FROM ponds WHERE id=?", (pond_id,))
-        if not pond:
-            return None
-        now_env = self.environment_now(pond_id)
-        state = now_env["state"]
-        prev = self.db.one("SELECT state FROM env_state WHERE pond_id=?", (pond_id,))
-        prev_state = prev["state"] if prev else None
-        if state == prev_state:
-            return now_env
-        self.db.execute(
-            "INSERT INTO env_state (pond_id, state, since_ts) VALUES (?,?,?) "
-            "ON CONFLICT(pond_id) DO UPDATE SET state=excluded.state, since_ts=excluded.since_ts",
-            (pond_id, state, time.time()))
-        name = pond["name"]
-        reason = " ".join(now_env["reasons"])
-        if state == "Critical":
-            self.notifier.notify("environment", "critical", f"{name}: environment Critical", reason, pond_id)
-        elif state == "Unknown" and prev_state is not None:
-            self.notifier.notify("probe", "warning", f"{name}: temperature probe offline",
-                                 "No reading received recently. Check the probe's power and connection.", pond_id)
-        elif state == "Moderate" and prev_state in (None, "Good", "Unknown"):
-            self.notifier.notify("environment", "warning", f"{name}: environment Moderate", reason, pond_id)
-        elif state == "Good" and prev_state in ("Critical", "Moderate"):
-            self.notifier.notify("environment", "info", f"{name}: environment back to Good", reason, pond_id)
-        return now_env
-
-    # -------------------------------------------------------- sampling rounds
-    def create_round(self, pond_id, data):
+    # ------------------------------------------------------------------ rounds
+    def create_round(self, pond_id, data, user, source="real"):
         pond = self.get_pond(pond_id)
-        ts = data.get("sampled_at") or time.time()
-        return self.db.insert("sampling_rounds", {
-            "pond_id": pond_id, "sampled_at": ts, "days_of_culture": self.days_of_culture(pond, ts),
-            "capture_condition": data.get("capture_condition"),
-            "time_of_day": data.get("time_of_day") or time_of_day(ts),
-            "weather": data.get("weather"), "phone_model": data.get("phone_model"),
-            "notes": data.get("notes"), "status": "draft", "created_at": time.time(),
-        })
+        sampled_at = data.get("sampled_at") or _today()
+        doc = data.get("days_of_culture")
+        if doc in (None, "") and pond.get("stocked_at"):
+            doc = _days_between(pond["stocked_at"], sampled_at)
+        rid = self.db.insert("rounds", {
+            "pond_id": pond_id, "sampled_at": sampled_at,
+            "days_of_culture": float(doc) if doc not in (None, "") else None,
+            "fish_count_n": data.get("fish_count_n") or pond.get("stocked_count"),
+            "board_mode": int(bool(data.get("board_mode", True))),
+            "capture_condition": data.get("capture_condition"), "notes": data.get("notes"),
+            "created_by": user, "source": source})
+        return self.get_round(rid)
 
-    def get_round_row(self, round_id):
-        row = self.db.one("SELECT * FROM sampling_rounds WHERE id=?", (round_id,))
-        if not row:
-            raise NotFound(f"Sampling round {round_id} not found")
-        return row
+    def _round_row(self, round_id):
+        r = self.db.one("SELECT r.*, p.name AS pond_name FROM rounds r JOIN ponds p ON p.id = r.pond_id "
+                        "WHERE r.id = ?", (round_id,))
+        if not r:
+            raise NotFound("Sampling round not found")
+        r["board_mode"] = bool(r["board_mode"])
+        return r
+
+    def get_round(self, round_id):
+        r = self._round_row(round_id)
+        snap = r.pop("snapshot_json")
+        fish = self.db.all("SELECT * FROM fish WHERE round_id = ? ORDER BY id", (round_id,))
+        r["fish"] = [self._fish_view(f) for f in fish]
+        r["assessment"] = json.loads(snap) if snap else self.round_assessment(round_id)
+        return r
 
     def update_round(self, round_id, data):
-        self.get_round_row(round_id)
-        allowed = {"capture_condition", "weather", "phone_model", "notes", "technician_health", "technician_readiness"}
-        self.db.update("sampling_rounds", round_id, {k: v for k, v in data.items() if k in allowed})
-        return self.round_detail(round_id)
-
-    def fish_for_round(self, round_id):
-        rows = self.db.query("SELECT * FROM fish WHERE round_id=? ORDER BY seq", (round_id,))
-        for r in rows:
-            r["flagged"] = bool(r["flagged"])
-            r["quality"] = json.loads(r.pop("quality_json") or "null")
-            r["detection"] = json.loads(r.pop("detection_json") or "null")
-            r["photo_url"] = f"/api/photos/{r['photo_path']}" if r["photo_path"] else None
-        return rows
-
-    def _previous_round(self, rnd):
-        return self.db.one(
-            "SELECT * FROM sampling_rounds WHERE pond_id=? AND sampled_at < ? ORDER BY sampled_at DESC LIMIT 1",
-            (rnd["pond_id"], rnd["sampled_at"]))
-
-    def _round_stats(self, round_id):
-        return self.db.one(
-            "SELECT COUNT(*) AS n, AVG(weight_g) AS mean_w, AVG(condition_factor) AS mean_k, AVG(fci) AS mean_fci "
-            "FROM fish WHERE round_id=?", (round_id,))
-
-    def compute_round(self, rnd, t=None):
-        t = t or self.thresholds()
-        pond = self.get_pond(rnd["pond_id"])
-        fish = self.db.query("SELECT weight_g, condition_factor, fci FROM fish WHERE round_id=?", (rnd["id"],))
-        prev = self._previous_round(rnd)
-        start = prev["sampled_at"] if prev else max(pond["stocked_at"], rnd["sampled_at"] - 30 * DAY)
-        stress = env_rules.stress_exposure(self.readings_between(pond["id"], start, rnd["sampled_at"]),
-                                           start, rnd["sampled_at"], thresholds=t)
-        stress["season"] = env_rules.season_for(rnd["sampled_at"])
-        stress["algae_reports"] = self.db.scalar(
-            "SELECT COUNT(*) FROM observations WHERE pond_id=? AND algae_seen=1 AND ts BETWEEN ? AND ?",
-            (pond["id"], start, rnd["sampled_at"])) or 0
-        env_critical = self.critical_between(pond["id"], start, rnd["sampled_at"], t)
-        ks = [f["condition_factor"] for f in fish if f["condition_factor"] is not None]
-        mean_k = sum(ks) / len(ks) if ks else None
-        health = health_rules.health_status([f["fci"] for f in fish], mean_k, env_critical, t)
-
-        history = self.db.query(
-            "SELECT r.days_of_culture AS doc, AVG(f.weight_g) AS mean_w FROM sampling_rounds r "
-            "JOIN fish f ON f.round_id = r.id WHERE r.pond_id=? AND r.sampled_at <= ? "
-            "GROUP BY r.id ORDER BY r.sampled_at", (pond["id"], rnd["sampled_at"]))
-        growth = harvest_rules.growth_trend([(h["doc"], h["mean_w"]) for h in history], t)
-        recent_critical = self.critical_between(pond["id"], rnd["sampled_at"] - t.recent_critical_days * DAY,
-                                                rnd["sampled_at"], t)
-        readiness = harvest_rules.harvest_readiness(
-            [f["weight_g"] for f in fish], mean_k, rnd["days_of_culture"], health["status"],
-            recent_critical, growth, t)
-        return {
-            "health": health, "readiness": readiness, "growth": growth, "stress": stress,
-            "env_critical_in_interval": env_critical, "mean_k": round(mean_k, 3) if mean_k else None,
-            "interval_start": start,
-        }
-
-    def round_detail(self, round_id):
-        rnd = self.get_round_row(round_id)
-        snapshot = json.loads(rnd.pop("snapshot_json") or "null")
-        result = dict(rnd)
-        result["fish"] = self.fish_for_round(round_id)
-        result["assessment"] = snapshot if snapshot else self.compute_round(rnd)
-        result["assessment_recorded"] = bool(snapshot)
-        result["pond"] = self.get_pond(rnd["pond_id"])
-        return result
-
-    def list_rounds(self, pond_id):
-        rows = self.db.query("SELECT * FROM sampling_rounds WHERE pond_id=? ORDER BY sampled_at DESC", (pond_id,))
-        out = []
-        for r in rows:
-            snapshot = json.loads(r.pop("snapshot_json") or "null")
-            stats = self._round_stats(r["id"])
-            a = snapshot or self.compute_round(r)
-            out.append({**r, "n_fish": stats["n"], "mean_weight_g": stats["mean_w"],
-                        "mean_fci": round(stats["mean_fci"], 2) if stats["mean_fci"] else None,
-                        "health_status": a["health"]["status"], "readiness_status": a["readiness"]["status"]})
-        return out
-
-    def complete_round(self, round_id):
-        rnd = self.get_round_row(round_id)
-        if rnd["status"] == "completed":
-            return self.round_detail(round_id)
-        assessment = self.compute_round(rnd)
-        self.db.update("sampling_rounds", round_id, {
-            "status": "completed", "completed_at": time.time(), "snapshot_json": json.dumps(assessment)})
-        pond = self.get_pond(rnd["pond_id"])
-        h = assessment["health"]
-        if h["status"] in ("Watch", "Refer to technician"):
-            self.notifier.notify(
-                "health", "critical" if h["status"].startswith("Refer") else "warning",
-                f"{pond['name']}: health status {h['status']}",
-                " ".join(h["reasons"]) + " Set flagged fish aside for the technician's review.", pond["id"])
-        r = assessment["readiness"]
-        if r["status"] in (harvest_rules.READY, harvest_rules.SIZE_REVIEW):
-            self.notifier.notify("harvest", "info", f"{pond['name']}: {r['status']}",
-                                 "Review the harvest readiness indicators with the technician.", pond["id"])
-        return self.round_detail(round_id)
+        r = self._round_row(round_id)
+        if r["status"] != "draft":
+            raise Invalid("A completed round cannot be edited.")
+        values = {k: data[k] for k in ("sampled_at", "days_of_culture", "fish_count_n", "capture_condition", "notes")
+                  if k in data}
+        if "board_mode" in data:
+            values["board_mode"] = int(bool(data["board_mode"]))
+        self.db.update("rounds", round_id, values)
+        if "board_mode" in data:
+            for f in self.db.all("SELECT id FROM fish WHERE round_id = ?", (round_id,)):
+                self.reprocess_fish(f["id"])
+        return self.get_round(round_id)
 
     def delete_round(self, round_id):
-        rnd = self.get_round_row(round_id)
-        if rnd["status"] == "completed":
-            raise ValueError("Completed rounds are part of the record and cannot be deleted.")
-        self.db.execute("DELETE FROM fish WHERE round_id=?", (round_id,))
-        self.db.execute("DELETE FROM sampling_rounds WHERE id=?", (round_id,))
+        r = self._round_row(round_id)
+        if r["status"] != "draft":
+            raise Invalid("Only a draft round can be deleted.")
+        shutil.rmtree(self._round_dir(round_id), ignore_errors=True)
+        self.db.run("DELETE FROM rounds WHERE id = ?", (round_id,))
+
+    def complete_round(self, round_id):
+        r = self._round_row(round_id)
+        if r["status"] != "draft":
+            raise Invalid("This round is already completed.")
+        assessment = self.round_assessment(round_id)
+        self.db.update("rounds", round_id, {"status": "completed", "completed_at": time.time(),
+                                            "snapshot_json": json.dumps(assessment)})
+        return self.get_round(round_id)
+
+    def set_round_assessment(self, round_id, tech_health, tech_readiness, user):
+        self._round_row(round_id)
+        if tech_health and tech_health not in HEALTH_LABELS:
+            raise Invalid("Unknown health status.")
+        if tech_readiness and tech_readiness not in READY_LABELS:
+            raise Invalid("Unknown readiness status.")
+        self.db.update("rounds", round_id, {"tech_health": tech_health or None,
+                                            "tech_readiness": tech_readiness or None, "tech_by": user})
+        return self.get_round(round_id)
 
     # ------------------------------------------------------------------ fish
-    def add_fish(self, round_id, weight_g, length_cm, technician_score=None, photo_bytes=None, photo_name=None):
-        from .vision.indicators import measure_indicators
-        from .vision.quality import check_quality, load_rgb
+    def add_fish(self, round_id, data=None, source="real"):
+        r = self._round_row(round_id)
+        if r["status"] != "draft":
+            raise Invalid("Fish can only be added to a draft round.")
+        data = data or {}
+        n = self.db.one("SELECT COUNT(*) n FROM fish WHERE round_id = ?", (round_id,))["n"]
+        fid = self.db.insert("fish", {"round_id": round_id, "code": data.get("code") or f"F{n + 1:02d}",
+                                      "scale_weight_g": data.get("scale_weight_g"),
+                                      "ruler_length_cm": data.get("ruler_length_cm"), "source": source,
+                                      "status": health.UNSCREENED})
+        return self.get_fish(fid)
 
-        rnd = self.get_round_row(round_id)
-        if rnd["status"] == "completed":
-            raise ValueError("This round is completed; start a new round to add fish.")
-        t = self.thresholds()
-        seq = (self.db.scalar("SELECT MAX(seq) FROM fish WHERE round_id=?", (round_id,)) or 0) + 1
-        k = health_rules.condition_factor(weight_g, length_cm)
-        values = {
-            "round_id": round_id, "seq": seq, "weight_g": weight_g, "length_cm": length_cm,
-            "condition_factor": round(k, 4) if k else None, "technician_score": technician_score,
-            "analysis_source": "manual", "created_at": time.time(),
-        }
-        if photo_bytes:
-            ext = (photo_name or "photo.jpg").rsplit(".", 1)[-1].lower()
-            ext = ext if ext in ("jpg", "jpeg", "png", "webp", "heic") else "jpg"
-            fname = f"r{round_id}_f{seq}_{uuid.uuid4().hex[:8]}.{ext}"
-            self.settings.uploads_dir.mkdir(parents=True, exist_ok=True)
-            (self.settings.uploads_dir / fname).write_bytes(photo_bytes)
-            try:
-                rgb = load_rgb(io.BytesIO(photo_bytes))
-            except Exception as exc:
-                raise ValueError(f"Could not read the photo: {exc}") from exc
-            checks = check_quality(rgb)
-            detection = self.detector.detect(rgb, photo_bytes)
-            if detection.is_stub:
-                checks.append({"key": "scale", "label": "Reference scale", "value": "not checked (no trained detector)",
-                               "passed": True, "hint": "Checked once YOLO26 is trained."})
-            else:
-                checks.append({"key": "scale", "label": "Reference scale",
-                               "value": "detected" if detection.scale_px_per_cm else "missing",
-                               "passed": detection.scale_px_per_cm is not None,
-                               "hint": "Keep the printed scale fully inside the frame."})
-            ind = measure_indicators(rgb, detection)
-            if detection.is_stub:
-                ind["image_length_cm"] = None  # a placeholder scale would give a meaningless length
-            values.update({
-                "photo_path": fname, "analysis_source": "photo",
-                "image_length_cm": ind["image_length_cm"],
-                "gill_color_index": ind["gill_color_index"], "skin_color_index": ind["skin_color_index"],
-                "fin_integrity": ind["fin_integrity"], "eye_clarity": ind["eye_clarity"],
-                "body_shape": ind["body_shape"],
-                "quality_json": json.dumps({"checks": checks, "passed": all(c["passed"] for c in checks),
-                                            "lighting_correction": ind["lighting_correction"]}),
-                "detection_json": json.dumps(detection.to_dict()),
-            })
-        fci = health_rules.predict_fci(self.fci_model(), values) if photo_bytes else None
-        values["fci"] = fci
-        values["flagged"] = 1 if fci is not None and fci < t.fci_flag_below else 0
-        fish_id = self.db.insert("fish", values)
-        return next(f for f in self.fish_for_round(round_id) if f["id"] == fish_id)
+    def get_fish(self, fish_id):
+        f = self.db.one("SELECT * FROM fish WHERE id = ?", (fish_id,))
+        if not f:
+            raise NotFound("Fish not found")
+        return self._fish_view(f)
 
     def update_fish(self, fish_id, data):
-        fish = self.db.one("SELECT * FROM fish WHERE id=?", (fish_id,))
-        if not fish:
-            raise NotFound(f"Fish {fish_id} not found")
-        allowed = {"weight_g", "length_cm", "technician_score"}
-        values = {k: v for k, v in data.items() if k in allowed}
-        merged = {**fish, **values}
-        k = health_rules.condition_factor(merged["weight_g"], merged["length_cm"])
-        values["condition_factor"] = round(k, 4) if k else None
-        merged["condition_factor"] = values["condition_factor"]
-        if fish["analysis_source"] != "manual":
-            merged_fci = health_rules.predict_fci(self.fci_model(), merged)
-            values["fci"] = merged_fci
-            values["flagged"] = 1 if merged_fci is not None and merged_fci < self.thresholds().fci_flag_below else 0
+        f = self.db.one("SELECT f.*, r.status AS round_status FROM fish f JOIN rounds r ON r.id = f.round_id "
+                        "WHERE f.id = ?", (fish_id,))
+        if not f:
+            raise NotFound("Fish not found")
+        if f["round_status"] != "draft":
+            raise Invalid("A completed round cannot be edited.")
+        values = {}
+        for k in ("code", "scale_weight_g", "ruler_length_cm"):
+            if k in data:
+                v = data[k]
+                if k != "code" and v not in (None, ""):
+                    v = float(v)
+                    if v <= 0:
+                        raise Invalid("Weight and length must be positive.")
+                values[k] = None if v == "" else v
         self.db.update("fish", fish_id, values)
-        return self.db.one("SELECT * FROM fish WHERE id=?", (fish_id,))
+        return self.get_fish(fish_id)
 
     def delete_fish(self, fish_id):
-        fish = self.db.one("SELECT f.id, r.status FROM fish f JOIN sampling_rounds r ON r.id=f.round_id WHERE f.id=?",
-                           (fish_id,))
-        if not fish:
-            raise NotFound(f"Fish {fish_id} not found")
-        if fish["status"] == "completed":
-            raise ValueError("Fish in a completed round are part of the record.")
-        self.db.execute("DELETE FROM fish WHERE id=?", (fish_id,))
+        f = self.db.one("SELECT f.id, r.status FROM fish f JOIN rounds r ON r.id = f.round_id WHERE f.id = ?",
+                        (fish_id,))
+        if not f:
+            raise NotFound("Fish not found")
+        if f["status"] != "draft":
+            raise Invalid("A completed round cannot be edited.")
+        self.db.run("DELETE FROM fish WHERE id = ?", (fish_id,))
 
-    # ------------------------------------------------------------- overview
-    def pond_summary(self, pond, t=None):
+    def _fish_view(self, f):
+        f = dict(f)
+        f["reasons"] = json.loads(f.pop("reasons_json") or "[]")
+        photos = self.db.all("SELECT * FROM photos WHERE fish_id = ? AND current = 1 ORDER BY side", (f["id"],))
+        f["photos"] = [self._photo_view(p) for p in photos]
+        return f
+
+    @staticmethod
+    def _photo_view(p):
+        res = json.loads(p.get("result_json") or "{}")
+        return {"id": p["id"], "side": p["side"], "ok": bool(p["ok"]), "reasons": res.get("reasons", []),
+                "top": res.get("top"), "length_cm": res.get("length_cm"), "quality": res.get("quality"),
+                "board": res.get("board"), "outline_method": (res.get("outline") or {}).get("method"),
+                "url": f"/api/photos/{p['id']}/raw",
+                "annotated_url": f"/api/photos/{p['id']}/annotated" if p.get("annotated_path") else None}
+
+    def _round_dir(self, round_id):
+        d = self.settings.uploads_dir / f"round_{round_id}"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def upload_photo(self, fish_id, side, data):
+        side = (side or "").upper()
+        if side not in SIDES:
+            raise Invalid("Side must be A or B.")
+        f = self.db.one("SELECT * FROM fish WHERE id = ?", (fish_id,))
+        if not f:
+            raise NotFound("Fish not found")
+        r = self._round_row(f["round_id"])
+        if r["status"] != "draft":
+            raise Invalid("A completed round cannot be edited.")
+        try:
+            img = quality.load(data)
+        except Exception as exc:
+            raise Invalid("That file is not a readable photo.") from exc
+        stamp = int(time.time() * 1000)
+        d = self._round_dir(r["id"])
+        raw = d / f"fish{fish_id}_{side}_{stamp}.jpg"
+        ann = d / f"fish{fish_id}_{side}_{stamp}_annotated.jpg"
+        cv2.imwrite(str(raw), img, [cv2.IMWRITE_JPEG_QUALITY, 90])
+        result = pipeline.process_photo(img, r["board_mode"], self.thresholds(), self.screener, self.seg_model, ann)
+        self.db.run("UPDATE photos SET current = 0 WHERE fish_id = ? AND side = ?", (fish_id, side))
+        pid = self.db.insert("photos", {"fish_id": fish_id, "side": side, "path": str(raw),
+                                        "annotated_path": str(ann) if result["annotated"] else None,
+                                        "ok": int(result["ok"]), "result_json": json.dumps(result)})
+        fish = self.reprocess_fish(fish_id)
+        photo = self._photo_view(self.db.one("SELECT * FROM photos WHERE id = ?", (pid,)))
+        return {"photo": photo, "fish": fish}
+
+    def reprocess_fish(self, fish_id):
+        """Re-run the pipeline over the stored photos (after a board-mode or cutoff change)."""
+        f = self.db.one("SELECT * FROM fish WHERE id = ?", (fish_id,))
+        photos = self.db.all("SELECT * FROM photos WHERE fish_id = ? AND current = 1", (fish_id,))
+        results = [json.loads(p["result_json"]) for p in photos]
+        merged = pipeline.merge_sides(results)
+        self.db.update("fish", fish_id, {"cls": merged["cls"], "conf": merged["conf"], "sides": merged["sides"],
+                                         "length_cm": merged["length_cm"], "area_cm2": merged["area_cm2"]})
+        if f["source"] == "real":
+            self._derive(fish_id)
+        return self.get_fish(fish_id)
+
+    def _derive(self, fish_id, t=None, model=None):
         t = t or self.thresholds()
-        env = self.environment_now(pond["id"], t)
-        latest = self.db.one(
-            "SELECT * FROM sampling_rounds WHERE pond_id=? ORDER BY sampled_at DESC LIMIT 1", (pond["id"],))
-        latest_summary = None
-        if latest:
-            snapshot = json.loads(latest.pop("snapshot_json") or "null")
-            a = snapshot or self.compute_round(latest, t)
-            latest_summary = {
-                "id": latest["id"], "sampled_at": latest["sampled_at"], "status": latest["status"],
-                "days_of_culture": latest["days_of_culture"], "health": a["health"], "readiness": a["readiness"]["status"],
-                "readiness_detail": a["readiness"],
-            }
-        return {**pond, "days_of_culture": self.days_of_culture(pond), "environment": env,
-                "latest_round": latest_summary,
-                "rounds_count": self.db.scalar("SELECT COUNT(*) FROM sampling_rounds WHERE pond_id=?", (pond["id"],))}
+        model = model or self.active_weight_model()
+        f = self.db.one("SELECT * FROM fish WHERE id = ?", (fish_id,))
+        w = weight.predict(model, f["length_cm"], f["area_cm2"])
+        k = health.condition_factor(w, f["length_cm"])
+        st = health.fish_status(f["cls"], f["conf"], k, t)
+        self.db.update("fish", fish_id, {"est_weight_g": round(w, 1) if w is not None else None,
+                                         "k": round(k, 3) if k is not None else None,
+                                         "status": st["status"], "reasons_json": json.dumps(st["reasons"])})
 
-    def growth_for_pond(self, pond_id):
+    def refresh_drafts(self):
+        t, model = self.thresholds(), self.active_weight_model()
+        for f in self.db.all("SELECT f.id FROM fish f JOIN rounds r ON r.id = f.round_id WHERE r.status = 'draft'"):
+            self._derive(f["id"], t, model)
+
+    def photo_file(self, photo_id, kind):
+        p = self.db.one("SELECT * FROM photos WHERE id = ?", (photo_id,))
+        path = p and (p["annotated_path"] if kind == "annotated" else p["path"])
+        if not path or not Path(path).exists():
+            raise NotFound("Photo not found")
+        return path
+
+    # ------------------------------------------------------------------ assessment
+    def round_assessment(self, round_id):
+        r = self._round_row(round_id)
         t = self.thresholds()
-        rounds = self.db.query(
-            "SELECT r.id, r.sampled_at, r.days_of_culture AS doc, COUNT(f.id) AS n, AVG(f.weight_g) AS mean_w, "
-            "AVG(f.condition_factor) AS mean_k FROM sampling_rounds r JOIN fish f ON f.round_id=r.id "
-            "WHERE r.pond_id=? GROUP BY r.id ORDER BY r.sampled_at", (pond_id,))
-        trend = harvest_rules.growth_trend([(r["doc"], r["mean_w"]) for r in rounds], t)
-        for r in rounds:
-            weights = [x["weight_g"] for x in self.db.query("SELECT weight_g FROM fish WHERE round_id=?", (r["id"],))]
-            r.update(harvest_rules.round_size_stats(weights, t))
-        return {"rounds": rounds, "trend": trend, "target_weight_g": t.target_weight_g}
-
-    # ----------------------------------------------------------- evaluation
-    def add_calibration(self, data):
-        return self.db.insert("probe_calibrations", {
-            "pond_id": data.get("pond_id"), "ts": data.get("ts") or time.time(),
-            "probe_c": data["probe_c"], "reference_c": data["reference_c"], "notes": data.get("notes")})
-
-    def scored_fish_rows(self):
-        return self.db.query(
-            "SELECT f.*, r.pond_id, r.id AS round_id FROM fish f JOIN sampling_rounds r ON r.id=f.round_id "
-            "WHERE f.technician_score IS NOT NULL")
-
-    def fit_fci(self, poly_features=()):
-        rows = self.scored_fish_rows()
-        model = health_rules.fit_fci_model(rows, health_rules.FEATURES, poly_features)
-        self.db.set_setting("fci_model", model)
-        self.rescore_all_fish(model)
-        return model
-
-    def reset_fci_model(self):
-        self.db.execute("DELETE FROM settings WHERE key='fci_model'")
-        self.rescore_all_fish(health_rules.DEFAULT_FCI_MODEL)
-
-    def rescore_all_fish(self, model):
-        t = self.thresholds()
-        for f in self.db.query("SELECT * FROM fish WHERE analysis_source != 'manual'"):
-            fci = health_rules.predict_fci(model, f)
-            self.db.update("fish", f["id"], {"fci": fci, "flagged": 1 if fci is not None and fci < t.fci_flag_below else 0})
-
-    def evaluation(self):
-        calib_rows = self.db.query("SELECT * FROM probe_calibrations ORDER BY ts DESC")
-        rounds = self.db.query("SELECT * FROM sampling_rounds WHERE status='completed' ORDER BY sampled_at")
-        health_pairs, ready_pairs, assoc_rows = [], [], []
-        for r in rounds:
-            snap = json.loads(r["snapshot_json"] or "null")
-            if not snap:
-                continue
-            health_pairs.append((snap["health"]["status"], r["technician_health"]))
-            sys_ready = snap["readiness"]["status"]
-            if sys_ready == harvest_rules.SIZE_REVIEW:
-                sys_ready = harvest_rules.APPROACHING  # not cleared as Ready
-            ready_pairs.append((sys_ready, r["technician_readiness"]))
-            stats = self._round_stats(r["id"])
-            assoc_rows.append({"pond_id": r["pond_id"], "x": snap["stress"]["hours_outside_band"],
-                               "y": round(stats["mean_fci"], 3) if stats["mean_fci"] else None})
-        scored = self.scored_fish_rows()
-        model = self.fci_model()
+        fish = self.db.all("SELECT * FROM fish WHERE round_id = ?", (round_id,))
+        pond = self.get_pond(r["pond_id"])
+        h = health.pond_status([f["status"] for f in fish], t)
+        weights = [f["est_weight_g"] for f in fish if f["est_weight_g"] is not None]
+        ks = [f["k"] for f in fish if f["k"] is not None]
+        mean_k = round(sum(ks) / len(ks), 3) if ks else None
+        size = harvest.size_stats(weights, t)
+        count = r["fish_count_n"] or pond.get("stocked_count")
+        biomass = round(size["mean_weight_g"] * count / 1000, 2) if size["mean_weight_g"] and count else None
+        points = [(p["doc"], p["avg"]) for p in self._history_points(r["pond_id"], exclude_round=round_id)]
+        if size["mean_weight_g"] and r["days_of_culture"] is not None:
+            points.append((r["days_of_culture"], size["mean_weight_g"]))
+        growth = harvest.growth_trend(points, t)
+        ready = harvest.readiness(weights, mean_k, r["days_of_culture"], growth, h["status"], t)
+        classes = {c: sum(1 for f in fish if f["cls"] == c) for c in ("Healthy", "Aeromonas", "TiLV")}
+        model = self.active_weight_model()
         return {
-            "probe_calibration": {**eval_rules.calibration_metrics([(c["probe_c"], c["reference_c"]) for c in calib_rows]),
-                                  "rows": calib_rows[:50]},
-            "fci_model": model,
-            "feature_labels": health_rules.FEATURE_LABELS,
-            "feature_groups": health_rules.compare_feature_groups(scored),
-            "n_scored_fish": len(scored),
-            "health_agreement": eval_rules.agreement(health_pairs, HEALTH_LABELS),
-            "readiness_agreement": eval_rules.agreement(ready_pairs, READINESS_LABELS),
-            "stress_association": eval_rules.stress_association(assoc_rows),
-            "length_error": self._length_error(),
+            "health": h, "readiness": ready, "growth": growth,
+            "summary": {"n_fish": len(fish), "n_screened": sum(1 for f in fish if f["cls"]),
+                        "n_measured": len(weights), "avg_weight_g": size["mean_weight_g"],
+                        "biomass_kg": biomass, "count_used": count, "cv": size["cv"],
+                        "share_at_target": size["share_at_target"], "mean_k": mean_k, "classes": classes,
+                        "status_counts": {s: sum(1 for f in fish if f["status"] == s)
+                                          for s in HEALTH_LABELS + [health.UNSCREENED]}},
+            "thresholds": t.to_dict(),
+            "thresholds_confirmed": bool(self.db.get_setting("thresholds_confirmed", False)),
+            "weight_model": {"id": model.get("id"), "label": model.get("label"), "kind": model["kind"],
+                             "provisional": model["kind"] == "power"},
+            "screener": self.screener.info()["name"], "computed_at": time.time()}
+
+    def _history_points(self, pond_id, exclude_round=None):
+        rows = self.db.all("SELECT id, days_of_culture, snapshot_json FROM rounds WHERE pond_id = ? AND "
+                           "status = 'completed' ORDER BY days_of_culture", (pond_id,))
+        pts = []
+        for row in rows:
+            if row["id"] == exclude_round or row["days_of_culture"] is None:
+                continue
+            avg = json.loads(row["snapshot_json"])["summary"]["avg_weight_g"]
+            if avg:
+                pts.append({"round_id": row["id"], "doc": row["days_of_culture"], "avg": avg})
+        return pts
+
+    def _round_brief(self, r):
+        a = json.loads(r["snapshot_json"]) if r.get("snapshot_json") else self.round_assessment(r["id"])
+        return {"id": r["id"], "sampled_at": r["sampled_at"], "days_of_culture": r["days_of_culture"],
+                "status": r["status"], "source": r["source"], "board_mode": bool(r["board_mode"]),
+                "health": a["health"]["status"], "readiness": a["readiness"]["status"],
+                "avg_weight_g": a["summary"]["avg_weight_g"], "biomass_kg": a["summary"]["biomass_kg"],
+                "n_fish": a["summary"]["n_fish"], "refer": a["summary"]["status_counts"].get(health.REFER, 0),
+                "tech_health": r["tech_health"], "tech_readiness": r["tech_readiness"]}
+
+    def pond_overview(self, pond_id):
+        pond = self.get_pond(pond_id)
+        rounds = self.db.all("SELECT * FROM rounds WHERE pond_id = ? ORDER BY sampled_at DESC, id DESC", (pond_id,))
+        briefs = [self._round_brief(r) for r in rounds]
+        latest = next((r for r in rounds if r["status"] == "completed"), None)
+        pts = self._history_points(pond_id)
+        return {"pond": pond, "rounds": briefs,
+                "latest": {**self._round_brief(latest), "assessment": json.loads(latest["snapshot_json"])}
+                if latest else None,
+                "growth": harvest.growth_trend([(p["doc"], p["avg"]) for p in pts], self.thresholds()),
+                "points": pts}
+
+    def dashboard(self):
+        out = []
+        for p in self.list_ponds():
+            rounds = self.db.all("SELECT * FROM rounds WHERE pond_id = ? ORDER BY sampled_at DESC, id DESC", (p["id"],))
+            latest = next((r for r in rounds if r["status"] == "completed"), None)
+            out.append({"pond": p, "latest": self._round_brief(latest) if latest else None,
+                        "drafts": [r["id"] for r in rounds if r["status"] == "draft"],
+                        "n_rounds": len(rounds)})
+        return {"ponds": out, "review_count": len(self.review_queue()["fish"]),
+                "screener": self.screener.info(), "weight_model": self.weight_model_info()["active"],
+                "thresholds_confirmed": bool(self.db.get_setting("thresholds_confirmed", False))}
+
+    # ------------------------------------------------------------------ technician
+    def review_queue(self):
+        fish = self.db.all(
+            "SELECT f.*, r.pond_id, r.sampled_at, r.status AS round_status, p.name AS pond_name FROM fish f "
+            "JOIN rounds r ON r.id = f.round_id JOIN ponds p ON p.id = r.pond_id "
+            "WHERE f.status IN (?, ?) AND f.tech_signs IS NULL ORDER BY f.status DESC, r.sampled_at DESC",
+            (health.REFER, health.WATCH))
+        rounds = self.db.all(
+            "SELECT r.*, p.name AS pond_name FROM rounds r JOIN ponds p ON p.id = r.pond_id "
+            "WHERE r.status = 'completed' AND (r.tech_health IS NULL OR r.tech_readiness IS NULL) "
+            "ORDER BY r.sampled_at DESC")
+        return {"fish": [{**self._fish_view(f), "pond_name": f["pond_name"], "sampled_at": f["sampled_at"]}
+                         for f in fish],
+                "rounds": [{**self._round_brief(r), "pond_name": r["pond_name"]} for r in rounds]}
+
+    def review_fish(self, fish_id, signs, note, user):
+        self.get_fish(fish_id)
+        if signs not in TECH_SIGNS:
+            raise Invalid("Signs must be none, aeromonas, tilv or other.")
+        self.db.update("fish", fish_id, {"tech_signs": signs, "tech_note": note, "reviewed_by": user,
+                                         "reviewed_at": time.time()})
+        return self.get_fish(fish_id)
+
+    # ------------------------------------------------------------------ weight model
+    def active_weight_model(self):
+        row = self.db.one("SELECT * FROM weight_models WHERE active = 1 ORDER BY id DESC LIMIT 1")
+        if not row:
+            return weight.provisional_model(self.thresholds())
+        m = json.loads(row["model_json"])
+        m["id"] = row["id"]
+        if row["includes_demo"]:
+            m["label"] = m["label"] + " (fitted on demo data)"
+        return m
+
+    def _fit_rows(self, include_demo):
+        sql = ("SELECT f.length_cm L, f.area_cm2 A, f.scale_weight_g W, r.pond_id grp, r.id rid FROM fish f "
+               "JOIN rounds r ON r.id = f.round_id WHERE f.length_cm IS NOT NULL AND f.area_cm2 IS NOT NULL "
+               "AND f.scale_weight_g IS NOT NULL" + ("" if include_demo else " AND f.source = 'real'"))
+        rows = self.db.all(sql)
+        by_pond = len({r["grp"] for r in rows}) >= 2
+        return [{"L": r["L"], "A": r["A"], "W": r["W"], "group": r["grp"] if by_pond else r["rid"]} for r in rows], \
+            "leave one pond out" if by_pond else "leave one round out"
+
+    def weight_model_info(self):
+        row = self.db.one("SELECT * FROM weight_models WHERE fit_json IS NOT NULL ORDER BY id DESC LIMIT 1")
+        real_rows, _ = self._fit_rows(False)
+        all_rows, _ = self._fit_rows(True)
+        active = self.active_weight_model()
+        return {"active": {"id": active.get("id"), "label": active["label"], "kind": active["kind"],
+                           "provisional": active["kind"] == "power",
+                           "terms": active.get("terms"), "range_L": active.get("range_L")},
+                "last_fit": json.loads(row["fit_json"]) if row else None,
+                "last_fit_at": row["created_at"] if row else None,
+                "available_rows": {"real": len(real_rows), "including_demo": len(all_rows)},
+                "min_rows": self.thresholds().weight_fit_min_fish}
+
+    def fit_weight_model(self, user, include_demo=False):
+        rows, scheme = self._fit_rows(include_demo)
+        try:
+            fit = weight.fit_models(rows, self.thresholds())
+        except ValueError as exc:
+            raise Invalid(str(exc)) from exc
+        fit["cv_scheme"] = scheme
+        chosen = fit[fit["selected"]]
+        self.db.run("UPDATE weight_models SET active = 0")
+        self.db.insert("weight_models", {"created_by": user, "kind": "ols", "model_json": json.dumps(chosen),
+                                         "fit_json": json.dumps(fit), "includes_demo": int(include_demo),
+                                         "active": 1})
+        self.refresh_drafts()
+        return self.weight_model_info()
+
+    def reset_weight_model(self):
+        self.db.run("UPDATE weight_models SET active = 0")
+        self.refresh_drafts()
+        return self.weight_model_info()
+
+    # ------------------------------------------------------------------ evaluation
+    def evaluation(self, include_demo=True):
+        src = "" if include_demo else " AND r.source = 'real'"
+        rounds = self.db.all("SELECT r.* FROM rounds r WHERE r.status = 'completed'" + src)
+        hp, rp = [], []
+        for r in rounds:
+            snap = json.loads(r["snapshot_json"])
+            if r["tech_health"]:
+                hp.append((snap["health"]["status"], r["tech_health"]))
+            if r["tech_readiness"]:
+                sys_r = snap["readiness"]["status"]
+                rp.append((harvest.APPROACHING if sys_r == harvest.SIZE_REVIEW else sys_r, r["tech_readiness"]))
+        fsrc = "" if include_demo else " AND f.source = 'real'"
+        fish = self.db.all("SELECT f.* FROM fish f JOIN rounds r ON r.id = f.round_id WHERE 1 = 1" + fsrc)
+        tech_map = {"none": "Healthy", "aeromonas": "Aeromonas", "tilv": "TiLV", "other": "Other signs"}
+        screen_labels = ["Healthy", "Aeromonas", "TiLV"]
+        screen_pairs = [(f["cls"] or "Not screened", tech_map[f["tech_signs"]]) for f in fish if f["tech_signs"]]
+        refer_pairs = [(f["status"], health.REFER if f["tech_signs"] in ("aeromonas", "tilv") else "no")
+                       for f in fish if f["tech_signs"]]
+        sm = ev.agreement(screen_pairs, screen_labels)
+        per_round = {}
+        for f in fish:
+            if f["est_weight_g"] is not None and f["scale_weight_g"] is not None:
+                per_round.setdefault(f["round_id"], []).append((f["est_weight_g"], f["scale_weight_g"]))
+        avg_pairs = [(sum(a for a, _ in v) / len(v), sum(b for _, b in v) / len(v)) for v in per_round.values()]
+        n_demo = sum(1 for r in rounds if r["source"] == "demo")
+        return {
+            "health": {**ev.agreement(hp, HEALTH_LABELS), "refer_recall": ev.refer_recall(hp)},
+            "readiness": ev.agreement(rp, READY_LABELS),
+            "screening": {**sm, "n_reviewed": len(screen_pairs),
+                          "other_or_unscreened": sum(1 for s, t in screen_pairs
+                                                     if s not in screen_labels or t not in screen_labels),
+                          "fish_refer_recall": ev.refer_recall(refer_pairs)},
+            "length_error": ev.error_stats([(f["length_cm"], f["ruler_length_cm"]) for f in fish]),
+            "weight_error": ev.error_stats([(f["est_weight_g"], f["scale_weight_g"]) for f in fish]),
+            "avg_weight_error": ev.error_stats(avg_pairs),
+            "retakes": self.retake_stats(include_demo),
+            "weight_model": self.weight_model_info(),
+            "rounds_used": len(rounds), "demo_rounds": n_demo,
+            "benchmarks": self.benchmarks(),
         }
 
-    def _length_error(self):
-        rows = self.db.query("SELECT f.length_cm, f.image_length_cm, f.detection_json FROM fish f "
-                             "WHERE f.length_cm IS NOT NULL AND f.image_length_cm IS NOT NULL")
-        real = [r for r in rows if not json.loads(r["detection_json"] or "{}").get("is_stub", True)]
-        pairs = [(r["image_length_cm"], r["length_cm"]) for r in real]
-        m = eval_rules.calibration_metrics(pairs)
-        m["n_stub_excluded"] = len(rows) - len(real)
-        return m
+    def retake_stats(self, include_demo=True):
+        row = self.db.one("SELECT COUNT(*) total, SUM(CASE WHEN p.ok = 0 THEN 1 ELSE 0 END) failed FROM photos p "
+                          "JOIN fish f ON f.id = p.fish_id" + ("" if include_demo else " WHERE f.source = 'real'"))
+        total, failed = row["total"] or 0, row["failed"] or 0
+        return {"total": total, "failed": failed, "rate": round(failed / total, 4) if total else None}
+
+    def benchmarks(self):
+        from .benchmarks import load_benchmarks
+
+        return load_benchmarks(self.settings.benchmarks_dir, self.screener.info())
+
+    # ------------------------------------------------------------------ export / backup
+    def export_csv(self, kind):
+        buf = io.StringIO()
+        if kind == "fish":
+            rows = self.db.all(
+                "SELECT p.name pond, r.id round_id, r.sampled_at, r.days_of_culture, f.code, f.source, f.cls, "
+                "f.conf, f.status, f.length_cm, f.area_cm2, f.est_weight_g, f.k, f.scale_weight_g, "
+                "f.ruler_length_cm, f.tech_signs, f.tech_note, f.sides FROM fish f JOIN rounds r ON r.id = f.round_id "
+                "JOIN ponds p ON p.id = r.pond_id ORDER BY r.sampled_at, f.id")
+        elif kind == "rounds":
+            rows = []
+            for r in self.db.all("SELECT r.*, p.name pond FROM rounds r JOIN ponds p ON p.id = r.pond_id "
+                                 "ORDER BY r.sampled_at"):
+                b = self._round_brief(r)
+                rows.append({"pond": r["pond"], **{k: v for k, v in b.items()}})
+        else:
+            raise NotFound("Unknown export")
+        if rows:
+            w = csv.DictWriter(buf, fieldnames=list(rows[0]))
+            w.writeheader()
+            w.writerows(rows)
+        return buf.getvalue()
+
+    def backup_zip(self):
+        out = io.BytesIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            snap = Path(tmp) / "tilapiers.db"
+            dst = sqlite3.connect(snap)
+            with self.db._lock:
+                self.db.conn.backup(dst)
+            dst.close()
+            with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+                z.write(snap, "tilapiers.db")
+                for f in self.settings.uploads_dir.rglob("*"):
+                    if f.is_file():
+                        z.write(f, "uploads/" + f.relative_to(self.settings.uploads_dir).as_posix())
+        return out.getvalue()
+
+    def restore_zip(self, data):
+        try:
+            z = zipfile.ZipFile(io.BytesIO(data))
+        except zipfile.BadZipFile as exc:
+            raise Invalid("That file is not a Tilapiers backup (.zip).") from exc
+        if "tilapiers.db" not in z.namelist():
+            raise Invalid("The backup does not contain tilapiers.db.")
+        with tempfile.TemporaryDirectory() as tmp:
+            z.extract("tilapiers.db", tmp)
+            src = sqlite3.connect(Path(tmp) / "tilapiers.db")
+            try:
+                if not src.execute("SELECT name FROM sqlite_master WHERE name = 'users'").fetchone():
+                    raise Invalid("The backup database has no users table.")
+                if not src.execute("SELECT 1 FROM users WHERE role = 'admin' AND active = 1").fetchone():
+                    raise Invalid("The backup has no active administrator.")
+                with self.db._lock:
+                    src.backup(self.db.conn)
+            finally:
+                src.close()
+        uploads = self.settings.uploads_dir
+        shutil.rmtree(uploads, ignore_errors=True)
+        uploads.mkdir(parents=True, exist_ok=True)
+        root = uploads.resolve()
+        for name in z.namelist():
+            if name.startswith("uploads/") and not name.endswith("/"):
+                target = (uploads / name[len("uploads/"):]).resolve()
+                if root not in target.parents:
+                    continue  # zip-slip guard
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(z.read(name))
+        # photo paths in the restored DB point at this machine's uploads folder
+        for p in self.db.all("SELECT id, path, annotated_path FROM photos"):
+            vals = {}
+            for col in ("path", "annotated_path"):
+                if p[col]:
+                    parts = Path(p[col]).parts
+                    if "uploads" in parts:
+                        rel = Path(*parts[parts.index("uploads") + 1:])
+                        vals[col] = str(uploads / rel)
+            self.db.update("photos", p["id"], vals)
+
+    # ------------------------------------------------------------------ content
+    def list_content(self):
+        return self.db.all("SELECT key, title, body_md, updated_at FROM content ORDER BY key")
+
+    def get_content(self, key):
+        c = self.db.one("SELECT key, title, body_md, updated_at FROM content WHERE key = ?", (key,))
+        if not c:
+            raise NotFound("Page not found")
+        return c
+
+    def set_content(self, key, title, body_md):
+        self.db.run("INSERT INTO content (key, title, body_md, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(key) "
+                    "DO UPDATE SET title = excluded.title, body_md = excluded.body_md, updated_at = excluded.updated_at",
+                    (key, title, body_md, time.time()))
+        return self.get_content(key)
