@@ -1,416 +1,408 @@
-"""HTTP API. All routes live under /api; the built React app is served for
-everything else (see main.py)."""
+"""HTTP API under /api. Session cookie auth with three roles (paper Table 5)."""
 
-import csv
-import hmac
-import io
-import json
 import time
 from typing import Optional
 
-from fastapi import APIRouter, File, Form, Header, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, Response
+from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from .notify import row_to_notification
-from .rules import environment as env_rules
-from .rules.thresholds import FIXED_KEYS, GROUPS
-from .services import DAY, NotFound
+from . import auth
+from .services import Invalid, NotFound
+from .vision import board_sheet
 
 router = APIRouter(prefix="/api")
 
-MAX_PHOTO_BYTES = 15 * 1024 * 1024
+MAX_PHOTO_BYTES = 20 * 1024 * 1024
+MAX_BACKUP_BYTES = 2 * 1024 * 1024 * 1024
+CARETAKER, TECH, ADMIN = "caretaker", "technician", "admin"
 
 
 def svc(request: Request):
     return request.app.state.services
 
 
-# ------------------------------------------------------------------ models
-class PondIn(BaseModel):
-    name: str = Field(min_length=1, max_length=80)
-    stocked_at: float
-    location: Optional[str] = None
-    area_m2: Optional[float] = Field(default=None, ge=0)
-    stocked_count: Optional[int] = Field(default=None, ge=0)
-    feeding_regime: Optional[str] = None
-    notes: Optional[str] = None
+def current_user(request: Request):
+    uid = request.app.state.sessions.read(request.cookies.get(auth.COOKIE))
+    if not uid:
+        raise HTTPException(401, "Please log in.")
+    try:
+        user = svc(request).get_user(uid)
+    except NotFound:
+        raise HTTPException(401, "Please log in.")
+    if not user["active"]:
+        raise HTTPException(401, "This account is deactivated.")
+    return user
 
 
-class PondPatch(BaseModel):
-    name: Optional[str] = None
-    stocked_at: Optional[float] = None
-    location: Optional[str] = None
-    area_m2: Optional[float] = None
-    stocked_count: Optional[int] = None
-    feeding_regime: Optional[str] = None
-    notes: Optional[str] = None
-    archived: Optional[int] = None
+def require(*roles):
+    def dep(user=Depends(current_user)):
+        if user["role"] not in roles:
+            raise HTTPException(403, "Your role cannot do this.")
+        return user
+    return dep
 
 
-class ObservationIn(BaseModel):
-    algae_seen: bool
-    do_ppm: Optional[float] = Field(default=None, ge=0, le=30)
-    ph: Optional[float] = Field(default=None, ge=0, le=14)
-    ammonia_ppm: Optional[float] = Field(default=None, ge=0)
-    nitrate_ppm: Optional[float] = Field(default=None, ge=0)
-    notes: Optional[str] = None
-    recorded_by: Optional[str] = None
-
-
-class RoundIn(BaseModel):
-    sampled_at: Optional[float] = None
-    capture_condition: Optional[str] = None
-    weather: Optional[str] = None
-    phone_model: Optional[str] = None
-    notes: Optional[str] = None
-
-
-class RoundPatch(BaseModel):
-    capture_condition: Optional[str] = None
-    weather: Optional[str] = None
-    phone_model: Optional[str] = None
-    notes: Optional[str] = None
-    technician_health: Optional[str] = None
-    technician_readiness: Optional[str] = None
-
-
-class FishPatch(BaseModel):
-    weight_g: Optional[float] = Field(default=None, gt=0)
-    length_cm: Optional[float] = Field(default=None, gt=0)
-    technician_score: Optional[float] = Field(default=None, ge=1, le=5)
-
-
-class ContactIn(BaseModel):
-    name: str = ""
-    email: str = ""
-    phone: str = ""
-
-
-class CalibrationIn(BaseModel):
-    probe_c: float
-    reference_c: float
-    pond_id: Optional[int] = None
-    notes: Optional[str] = None
-
-
-class FitIn(BaseModel):
-    poly_features: list[str] = []
-
-
-class IngestReading(BaseModel):
-    ts: float
-    temperature_c: float = Field(ge=-55, le=125)
-
-
-class IngestIn(BaseModel):
-    pond_id: int
-    readings: list[IngestReading]
-
-
-def _guard(fn, *args, **kwargs):
+def call(fn, *args, **kwargs):
     try:
         return fn(*args, **kwargs)
     except NotFound as exc:
         raise HTTPException(404, str(exc))
-    except ValueError as exc:
+    except Invalid as exc:
         raise HTTPException(400, str(exc))
 
 
-# ------------------------------------------------------------------ system
+# ------------------------------------------------------------------ auth / profile
+class LoginIn(BaseModel):
+    username: str
+    password: str
+
+
+@router.post("/auth/login")
+def login(body: LoginIn, request: Request, response: Response):
+    user = svc(request).authenticate(body.username, body.password)
+    if not user:
+        time.sleep(0.4)  # slow down guessing
+        raise HTTPException(401, "Wrong username or password.")
+    response.set_cookie(auth.COOKIE, request.app.state.sessions.issue(user["id"]), max_age=auth.MAX_AGE_S,
+                        httponly=True, samesite="lax")
+    return user
+
+
+@router.post("/auth/logout")
+def logout(response: Response):
+    response.delete_cookie(auth.COOKIE)
+    return {"ok": True}
+
+
+@router.get("/auth/me")
+def me(user=Depends(current_user)):
+    return user
+
+
+class PasswordIn(BaseModel):
+    current_password: str
+    new_password: str
+
+
+@router.post("/profile/password")
+def change_password(body: PasswordIn, request: Request, user=Depends(current_user)):
+    call(svc(request).change_password, user["id"], body.current_password, body.new_password)
+    return {"ok": True}
+
+
+class ProfileIn(BaseModel):
+    full_name: str = Field(min_length=1, max_length=80)
+
+
+@router.patch("/profile")
+def update_profile(body: ProfileIn, request: Request, user=Depends(current_user)):
+    return call(svc(request).update_user, user["id"], {"full_name": body.full_name}, user["id"])
+
+
 @router.get("/system")
 def system(request: Request):
-    s = svc(request)
-    app = request.app
-    detector = s.detector
-    return {
-        "demo": app.state.settings.demo,
-        "sensor": app.state.monitor.status if app.state.monitor else {"mode": "off"},
-        "detector": {"name": detector.name, "is_stub": detector.is_stub},
-        "fci_model": {k: s.fci_model().get(k) for k in ("name", "source", "n")},
-        "notifications": s.notifier.channel_status(),
-        "thresholds": s.thresholds().to_dict(),
-        "season": env_rules.season_for(time.time()),
-        "server_time": time.time(),
-    }
+    """Public: what the login page and the footer need."""
+    s = request.app.state
+    return {"demo": s.settings.demo, "screener": s.services.screener.info(),
+            "segmentation": "yolo-seg" if s.services.seg_model is not None else "classical (interim)",
+            "demo_accounts": [{"username": u, "password": u + "123", "role": r}
+                              for u, r in (("caretaker", "caretaker"), ("technician", "technician"),
+                                           ("admin", "admin"))] if s.settings.demo else []}
 
 
-@router.get("/overview")
-def overview(request: Request):
-    s = svc(request)
-    t = s.thresholds()
-    ponds = [s.pond_summary(p, t) for p in s.list_ponds()]
-    notes = [row_to_notification(r) for r in s.db.query("SELECT * FROM notifications ORDER BY ts DESC LIMIT 8")]
-    unread = s.db.scalar("SELECT COUNT(*) FROM notifications WHERE acknowledged=0")
-    return {"ponds": ponds, "notifications": notes, "unread": unread}
+# ------------------------------------------------------------------ users (admin)
+class UserIn(BaseModel):
+    username: str = Field(min_length=2, max_length=40)
+    password: str
+    role: str
+    full_name: Optional[str] = None
 
 
-# ------------------------------------------------------------------- ponds
+class UserPatch(BaseModel):
+    full_name: Optional[str] = None
+    role: Optional[str] = None
+    active: Optional[bool] = None
+    password: Optional[str] = None
+
+
+@router.get("/users")
+def list_users(request: Request, _=Depends(require(ADMIN))):
+    return svc(request).list_users()
+
+
+@router.post("/users", status_code=201)
+def create_user(body: UserIn, request: Request, _=Depends(require(ADMIN))):
+    return call(svc(request).create_user, body.model_dump())
+
+
+@router.patch("/users/{uid}")
+def update_user(uid: int, body: UserPatch, request: Request, user=Depends(require(ADMIN))):
+    return call(svc(request).update_user, uid, body.model_dump(exclude_none=True), user["id"])
+
+
+# ------------------------------------------------------------------ ponds
+class PondIn(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    location: Optional[str] = None
+    setup: Optional[str] = None
+    stocked_at: Optional[str] = None
+    stocked_count: Optional[int] = Field(default=None, ge=0)
+    archived: Optional[bool] = None
+
+
+class PondPatch(PondIn):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=80)
+
+
 @router.get("/ponds")
-def ponds(request: Request, include_archived: bool = False):
-    s = svc(request)
-    return [s.pond_summary(p) for p in s.list_ponds(include_archived)]
+def ponds(request: Request, include_archived: bool = False, _=Depends(current_user)):
+    return svc(request).list_ponds(include_archived)
 
 
 @router.post("/ponds", status_code=201)
-def create_pond(request: Request, body: PondIn):
-    s = svc(request)
-    pond_id = s.create_pond(body.model_dump())
-    return s.pond_summary(s.get_pond(pond_id))
-
-
-@router.get("/ponds/{pond_id}")
-def pond(request: Request, pond_id: int):
-    s = svc(request)
-    return _guard(lambda: s.pond_summary(s.get_pond(pond_id)))
+def create_pond(body: PondIn, request: Request, _=Depends(require(ADMIN))):
+    return call(svc(request).create_pond, body.model_dump(exclude_none=True))
 
 
 @router.patch("/ponds/{pond_id}")
-def patch_pond(request: Request, pond_id: int, body: PondPatch):
-    s = svc(request)
-    return _guard(s.update_pond, pond_id, body.model_dump(exclude_unset=True))
+def update_pond(pond_id: int, body: PondPatch, request: Request, _=Depends(require(ADMIN))):
+    return call(svc(request).update_pond, pond_id, body.model_dump(exclude_unset=True))
 
 
-@router.get("/ponds/{pond_id}/environment")
-def pond_environment(request: Request, pond_id: int, hours: float = 24):
-    s = svc(request)
-    pond_row = _guard(s.get_pond, pond_id)
-    t = s.thresholds()
-    now = time.time()
-    last = s.db.one("SELECT sampled_at FROM sampling_rounds WHERE pond_id=? ORDER BY sampled_at DESC LIMIT 1",
-                    (pond_id,))
-    start = last["sampled_at"] if last else max(pond_row["stocked_at"], now - 30 * DAY)
-    stress = env_rules.stress_exposure(s.readings_between(pond_id, start, now), start, now, thresholds=t)
-    stress["since"] = "last sampling round" if last else "stocking (max 30 days)"
-    return {
-        "now": s.environment_now(pond_id, t),
-        "history": s.temperature_history(pond_id, hours=min(max(hours, 1), 24 * 60)),
-        "hours": hours,
-        "observations": s.observations(pond_id),
-        "stress_since_last_round": stress,
-    }
+@router.get("/ponds/{pond_id}")
+def pond_overview(pond_id: int, request: Request, _=Depends(current_user)):
+    return call(svc(request).pond_overview, pond_id)
 
 
-@router.post("/ponds/{pond_id}/observations", status_code=201)
-def add_observation(request: Request, pond_id: int, body: ObservationIn):
-    s = svc(request)
-    _guard(s.add_observation, pond_id, body.model_dump())
-    s.evaluate_environment(pond_id)
-    return s.environment_now(pond_id)
+@router.get("/dashboard")
+def dashboard(request: Request, _=Depends(current_user)):
+    return svc(request).dashboard()
 
 
-@router.get("/ponds/{pond_id}/rounds")
-def rounds(request: Request, pond_id: int):
-    s = svc(request)
-    _guard(s.get_pond, pond_id)
-    return s.list_rounds(pond_id)
+# ------------------------------------------------------------------ rounds and fish
+class RoundIn(BaseModel):
+    pond_id: int
+    sampled_at: Optional[str] = None
+    days_of_culture: Optional[float] = Field(default=None, ge=0)
+    fish_count_n: Optional[int] = Field(default=None, ge=0)
+    board_mode: bool = True
+    capture_condition: Optional[str] = None
+    notes: Optional[str] = None
 
 
-@router.post("/ponds/{pond_id}/rounds", status_code=201)
-def create_round(request: Request, pond_id: int, body: RoundIn):
-    s = svc(request)
-    round_id = _guard(s.create_round, pond_id, body.model_dump())
-    return s.round_detail(round_id)
+class RoundPatch(BaseModel):
+    sampled_at: Optional[str] = None
+    days_of_culture: Optional[float] = Field(default=None, ge=0)
+    fish_count_n: Optional[int] = Field(default=None, ge=0)
+    board_mode: Optional[bool] = None
+    capture_condition: Optional[str] = None
+    notes: Optional[str] = None
 
 
-@router.get("/ponds/{pond_id}/growth")
-def growth(request: Request, pond_id: int):
-    s = svc(request)
-    _guard(s.get_pond, pond_id)
-    return s.growth_for_pond(pond_id)
+SAMPLERS = (CARETAKER, ADMIN)
 
 
-# ------------------------------------------------------------------ rounds
+@router.post("/rounds", status_code=201)
+def create_round(body: RoundIn, request: Request, user=Depends(require(*SAMPLERS))):
+    data = body.model_dump()
+    return call(svc(request).create_round, data.pop("pond_id"), data, user["username"])
+
+
 @router.get("/rounds/{round_id}")
-def round_detail(request: Request, round_id: int):
-    return _guard(svc(request).round_detail, round_id)
+def get_round(round_id: int, request: Request, _=Depends(current_user)):
+    return call(svc(request).get_round, round_id)
 
 
 @router.patch("/rounds/{round_id}")
-def patch_round(request: Request, round_id: int, body: RoundPatch):
-    return _guard(svc(request).update_round, round_id, body.model_dump(exclude_unset=True))
+def update_round(round_id: int, body: RoundPatch, request: Request, _=Depends(require(*SAMPLERS))):
+    return call(svc(request).update_round, round_id, body.model_dump(exclude_unset=True))
 
 
 @router.delete("/rounds/{round_id}", status_code=204)
-def delete_round(request: Request, round_id: int):
-    _guard(svc(request).delete_round, round_id)
+def delete_round(round_id: int, request: Request, _=Depends(require(*SAMPLERS))):
+    call(svc(request).delete_round, round_id)
+    return Response(status_code=204)
 
 
 @router.post("/rounds/{round_id}/complete")
-def complete_round(request: Request, round_id: int):
-    return _guard(svc(request).complete_round, round_id)
+def complete_round(round_id: int, request: Request, _=Depends(require(*SAMPLERS))):
+    return call(svc(request).complete_round, round_id)
+
+
+class FishIn(BaseModel):
+    code: Optional[str] = Field(default=None, max_length=20)
+    scale_weight_g: Optional[float] = Field(default=None, gt=0)
+    ruler_length_cm: Optional[float] = Field(default=None, gt=0)
 
 
 @router.post("/rounds/{round_id}/fish", status_code=201)
-async def add_fish(
-    request: Request,
-    round_id: int,
-    weight_g: float = Form(..., gt=0, le=5000),
-    length_cm: float = Form(..., gt=0, le=80),
-    technician_score: Optional[float] = Form(None, ge=1, le=5),
-    photo: Optional[UploadFile] = File(None),
-):
-    data = None
-    name = None
-    if photo is not None and photo.filename:
-        data = await photo.read()
-        name = photo.filename
-        if len(data) > MAX_PHOTO_BYTES:
-            raise HTTPException(413, "Photo is larger than 15 MB.")
-        if not data:
-            data = None
-    return _guard(svc(request).add_fish, round_id, weight_g, length_cm, technician_score, data, name)
+def add_fish(round_id: int, body: FishIn, request: Request, _=Depends(require(*SAMPLERS))):
+    return call(svc(request).add_fish, round_id, body.model_dump(exclude_none=True))
 
 
 @router.patch("/fish/{fish_id}")
-def patch_fish(request: Request, fish_id: int, body: FishPatch):
-    return _guard(svc(request).update_fish, fish_id, body.model_dump(exclude_unset=True))
+def update_fish(fish_id: int, body: FishIn, request: Request, _=Depends(require(*SAMPLERS))):
+    return call(svc(request).update_fish, fish_id, body.model_dump(exclude_unset=True))
 
 
 @router.delete("/fish/{fish_id}", status_code=204)
-def delete_fish(request: Request, fish_id: int):
-    _guard(svc(request).delete_fish, fish_id)
+def delete_fish(fish_id: int, request: Request, _=Depends(require(*SAMPLERS))):
+    call(svc(request).delete_fish, fish_id)
+    return Response(status_code=204)
 
 
-@router.get("/photos/{name}")
-def photo(request: Request, name: str):
-    uploads = request.app.state.settings.uploads_dir.resolve()
-    path = (uploads / name).resolve()
-    if path.parent != uploads or not path.is_file():
-        raise HTTPException(404, "Photo not found")
+@router.post("/fish/{fish_id}/photos/{side}")
+async def upload_photo(fish_id: int, side: str, request: Request, file: UploadFile = File(...),
+                       _=Depends(require(*SAMPLERS))):
+    data = await file.read(MAX_PHOTO_BYTES + 1)
+    if len(data) > MAX_PHOTO_BYTES:
+        raise HTTPException(413, "Photo is larger than 20 MB.")
+    return call(svc(request).upload_photo, fish_id, side, data)
+
+
+@router.get("/photos/{photo_id}/{kind}")
+def photo(photo_id: int, kind: str, request: Request, _=Depends(current_user)):
+    if kind not in ("raw", "annotated"):
+        raise HTTPException(404, "Not found")
+    return FileResponse(call(svc(request).photo_file, photo_id, kind), media_type="image/jpeg")
+
+
+# ------------------------------------------------------------------ technician
+class ReviewIn(BaseModel):
+    signs: str
+    note: Optional[str] = Field(default=None, max_length=500)
+
+
+class AssessmentIn(BaseModel):
+    tech_health: Optional[str] = None
+    tech_readiness: Optional[str] = None
+
+
+REVIEWERS = (TECH, ADMIN)
+
+
+@router.get("/review/queue")
+def review_queue(request: Request, _=Depends(require(*REVIEWERS))):
+    return svc(request).review_queue()
+
+
+@router.post("/fish/{fish_id}/review")
+def review_fish(fish_id: int, body: ReviewIn, request: Request, user=Depends(require(*REVIEWERS))):
+    return call(svc(request).review_fish, fish_id, body.signs, body.note, user["username"])
+
+
+@router.post("/rounds/{round_id}/assessment")
+def round_assessment(round_id: int, body: AssessmentIn, request: Request, user=Depends(require(*REVIEWERS))):
+    return call(svc(request).set_round_assessment, round_id, body.tech_health, body.tech_readiness,
+                user["username"])
+
+
+# ------------------------------------------------------------------ maintenance
+class ThresholdsIn(BaseModel):
+    values: dict = {}
+    confirmed: Optional[bool] = None
+
+
+@router.get("/thresholds")
+def thresholds(request: Request, _=Depends(current_user)):
+    return svc(request).thresholds_meta()
+
+
+@router.put("/thresholds")
+def put_thresholds(body: ThresholdsIn, request: Request, user=Depends(require(ADMIN))):
+    return call(svc(request).update_thresholds, body.values, user["username"], body.confirmed)
+
+
+@router.get("/weight-model")
+def weight_model(request: Request, _=Depends(current_user)):
+    return svc(request).weight_model_info()
+
+
+class FitIn(BaseModel):
+    include_demo: bool = False
+
+
+@router.post("/weight-model/fit")
+def fit_weight_model(body: FitIn, request: Request, user=Depends(require(ADMIN))):
+    return call(svc(request).fit_weight_model, user["username"], body.include_demo)
+
+
+@router.post("/weight-model/reset")
+def reset_weight_model(request: Request, _=Depends(require(ADMIN))):
+    return svc(request).reset_weight_model()
+
+
+@router.get("/backup")
+def backup(request: Request, _=Depends(require(ADMIN))):
+    stamp = time.strftime("%Y%m%d-%H%M")
+    return Response(svc(request).backup_zip(), media_type="application/zip",
+                    headers={"Content-Disposition": f'attachment; filename="tilapiers-backup-{stamp}.zip"'})
+
+
+@router.post("/restore")
+async def restore(request: Request, file: UploadFile = File(...), _=Depends(require(ADMIN))):
+    data = await file.read(MAX_BACKUP_BYTES + 1)
+    if len(data) > MAX_BACKUP_BYTES:
+        raise HTTPException(413, "Backup is too large.")
+    call(svc(request).restore_zip, data)
+    return {"ok": True}
+
+
+@router.get("/board.png")
+def board_png(request: Request, _=Depends(current_user)):
+    t = svc(request).thresholds()
+    return Response(board_sheet.render_png(t.board_width_cm, t.board_height_cm), media_type="image/png")
+
+
+@router.get("/board.pdf")
+def board_pdf(request: Request, _=Depends(current_user)):
+    t = svc(request).thresholds()
+    return Response(board_sheet.render_pdf(t.board_width_cm, t.board_height_cm), media_type="application/pdf",
+                    headers={"Content-Disposition": 'attachment; filename="tilapiers-sampling-board.pdf"'})
+
+
+# ------------------------------------------------------------------ evaluation / export
+@router.get("/evaluation")
+def evaluation(request: Request, include_demo: bool = True, _=Depends(require(TECH, ADMIN))):
+    return svc(request).evaluation(include_demo)
+
+
+@router.get("/benchmarks/{name}")
+def benchmark_image(name: str, request: Request, _=Depends(current_user)):
+    from .benchmarks import IMAGES
+
+    if name not in IMAGES:
+        raise HTTPException(404, "Not found")
+    path = request.app.state.settings.benchmarks_dir / name
+    if not path.exists():
+        raise HTTPException(404, "Not found")
     return FileResponse(path)
 
 
-# ----------------------------------------------------------- notifications
-@router.get("/notifications")
-def notifications(request: Request, limit: int = 100):
-    s = svc(request)
-    rows = s.db.query("SELECT * FROM notifications ORDER BY ts DESC LIMIT ?", (min(limit, 500),))
-    return {"notifications": [row_to_notification(r) for r in rows], "channel": s.notifier.channel_status()}
+@router.get("/export/{kind}.csv")
+def export(kind: str, request: Request, _=Depends(require(TECH, ADMIN))):
+    text = call(svc(request).export_csv, kind)
+    return Response(text, media_type="text/csv",
+                    headers={"Content-Disposition": f'attachment; filename="tilapiers-{kind}.csv"'})
 
 
-@router.post("/notifications/{note_id}/ack")
-def ack(request: Request, note_id: int):
-    svc(request).db.execute("UPDATE notifications SET acknowledged=1 WHERE id=?", (note_id,))
-    return {"ok": True}
+# ------------------------------------------------------------------ content (FAQs, About Us)
+class ContentIn(BaseModel):
+    title: str = Field(min_length=1, max_length=120)
+    body_md: str = Field(max_length=20000)
 
 
-@router.post("/notifications/ack-all")
-def ack_all(request: Request):
-    svc(request).db.execute("UPDATE notifications SET acknowledged=1 WHERE acknowledged=0")
-    return {"ok": True}
+@router.get("/content")
+def list_content(request: Request, _=Depends(current_user)):
+    return svc(request).list_content()
 
 
-# ---------------------------------------------------------------- settings
-@router.get("/settings/thresholds")
-def get_thresholds(request: Request):
-    return {"values": svc(request).thresholds().to_dict(), "groups": GROUPS, "fixed": list(FIXED_KEYS)}
+@router.get("/content/{key}")
+def get_content(key: str, request: Request, _=Depends(current_user)):
+    return call(svc(request).get_content, key)
 
 
-@router.put("/settings/thresholds")
-def put_thresholds(request: Request, body: dict):
-    s = svc(request)
-    body = {k: v for k, v in body.items() if k not in FIXED_KEYS}
-    t = _guard(s.set_thresholds, body)
-    return {"values": t.to_dict(), "groups": GROUPS, "fixed": list(FIXED_KEYS)}
-
-
-@router.get("/settings/contact")
-def get_contact(request: Request):
-    return svc(request).notifier.channel_status()
-
-
-@router.put("/settings/contact")
-def put_contact(request: Request, body: ContactIn):
-    s = svc(request)
-    s.db.set_setting("contact", body.model_dump())
-    return s.notifier.channel_status()
-
-
-@router.post("/notifications/test")
-def test_notification(request: Request):
-    s = svc(request)
-    note_id = s.notifier.notify("system", "info", "Test notification",
-                                "This is a test alert from Tilapiers settings.")
-    row = s.db.one("SELECT * FROM notifications WHERE id=?", (note_id,))
-    return row_to_notification(row)
-
-
-# -------------------------------------------------------------- evaluation
-@router.get("/evaluation")
-def evaluation(request: Request):
-    return svc(request).evaluation()
-
-
-@router.post("/evaluation/fit")
-def fit(request: Request, body: FitIn):
-    return _guard(svc(request).fit_fci, body.poly_features)
-
-
-@router.post("/evaluation/reset-model")
-def reset_model(request: Request):
-    svc(request).reset_fci_model()
-    return {"ok": True}
-
-
-@router.post("/calibrations", status_code=201)
-def add_calibration(request: Request, body: CalibrationIn):
-    svc(request).add_calibration(body.model_dump())
-    return svc(request).evaluation()["probe_calibration"]
-
-
-# ------------------------------------------------------------------ ingest
-@router.post("/ingest/temperature")
-def ingest(request: Request, body: IngestIn, x_device_token: Optional[str] = Header(None)):
-    """Batch upload from a networked probe that buffers readings while offline."""
-    token = request.app.state.settings.ingest_token
-    if not token:
-        raise HTTPException(503, "Ingest disabled: set TILAPIERS_INGEST_TOKEN.")
-    if not x_device_token or not hmac.compare_digest(x_device_token, token):
-        raise HTTPException(401, "Invalid device token")
-    s = svc(request)
-    _guard(s.get_pond, body.pond_id)
-    n = s.record_readings(body.pond_id, [r.model_dump() for r in body.readings], "probe-http")
-    s.evaluate_environment(body.pond_id)
-    return {"stored": n}
-
-
-# ------------------------------------------------------------------ export
-EXPORTS = {
-    "temperature": "SELECT r.id, p.name AS pond, r.ts, r.temperature_c, r.source FROM temperature_readings r "
-                   "JOIN ponds p ON p.id=r.pond_id ORDER BY r.ts",
-    "observations": "SELECT o.*, p.name AS pond FROM observations o JOIN ponds p ON p.id=o.pond_id ORDER BY o.ts",
-    "rounds": "SELECT r.id, p.name AS pond, r.sampled_at, r.days_of_culture, r.capture_condition, r.time_of_day, "
-              "r.weather, r.phone_model, r.status, r.technician_health, r.technician_readiness, r.snapshot_json "
-              "FROM sampling_rounds r JOIN ponds p ON p.id=r.pond_id ORDER BY r.sampled_at",
-    "fish": "SELECT f.id, p.name AS pond, r.id AS round_id, r.days_of_culture, r.capture_condition, f.seq, "
-            "f.weight_g, f.length_cm, f.image_length_cm, f.condition_factor, f.gill_color_index, "
-            "f.skin_color_index, f.fin_integrity, f.eye_clarity, f.body_shape, f.fci, f.flagged, "
-            "f.technician_score, f.analysis_source, f.detection_json FROM fish f "
-            "JOIN sampling_rounds r ON r.id=f.round_id JOIN ponds p ON p.id=r.pond_id ORDER BY r.sampled_at, f.seq",
-    "notifications": "SELECT * FROM notifications ORDER BY ts",
-}
-TS_COLS = {"ts", "sampled_at"}
-
-
-@router.get("/export/{table}.csv")
-def export(request: Request, table: str):
-    if table not in EXPORTS:
-        raise HTTPException(404, "Unknown export")
-    rows = svc(request).db.query(EXPORTS[table])
-    buf = io.StringIO()
-    if rows:
-        headers = list(rows[0].keys())
-        if table == "fish":
-            headers = [h for h in headers if h != "detection_json"] + ["detector"]
-        writer = csv.writer(buf)
-        writer.writerow(headers)
-        from .services import fmt_ts
-
-        for r in rows:
-            if table == "fish":
-                det = json.loads(r.pop("detection_json") or "null")
-                r["detector"] = (det or {}).get("model") or r["analysis_source"]
-            writer.writerow([fmt_ts(r[h]) if h in TS_COLS else r[h] for h in headers])
-    return Response(buf.getvalue(), media_type="text/csv; charset=utf-8",
-                    headers={"Content-Disposition": f'attachment; filename="tilapiers_{table}.csv"'})
+@router.put("/content/{key}")
+def put_content(key: str, body: ContentIn, request: Request, _=Depends(require(ADMIN))):
+    return svc(request).set_content(key, body.title, body.body_md)
