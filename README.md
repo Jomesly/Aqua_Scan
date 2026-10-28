@@ -1,87 +1,79 @@
 # Tilapiers
 
-**A smart hybrid YOLO26 and regression-based framework for environment monitoring, fish health monitoring, and harvest readiness assessment in outdoor Nile tilapia ponds.**
+**TILAPIERS: A Smart Hybrid YOLO26 and Regression-Based Framework for Health Monitoring, Weight Estimation, and Harvest Readiness Assessment for Nile Tilapia Outdoor Ponds**
 
-Thesis prototype, CS 307, Technological Institute of the Philippines – Quezon City.
+Thesis prototype, CS 307, Technological Institute of the Philippines, Quezon City.
 
-Tilapiers is a monitoring and decision-support tool. It screens visible indicators, refers flagged fish to a technician, and records a rule-based readiness status per pond. It does **not** diagnose disease, forecast harvest dates, or make the harvest decision.
+Tilapiers is a web app for the caretaker's sampling round. The caretaker photographs each sampled fish (both sides) on a sampling board with four corner markers, then weighs it and measures it. The system:
 
-## Modules
+1. checks image quality, finds the markers and corrects the photo to a flat view with a known scale;
+2. outlines the fish and measures its **length and area**;
+3. screens it with the team's YOLO model as **Healthy, Aeromonas or TiLV**;
+4. estimates its **weight** by regression and computes the condition factor K;
+5. gives the fish and the pond a **Health status** (Normal / Watch / Refer to technician) and the pond a **Harvest readiness status** (Not Ready / Approaching / Ready, with health as a clearance check).
 
-| Module | What it does | Status in this prototype |
-|---|---|---|
-| **Environment Monitoring** | Logs water temperature from the existing DS18B20 probe, adds the Philippine season and the caretaker's daily yes/no algae report (plus optional DO / pH / ammonia / nitrate), and classifies each pond as Good, Moderate or Critical. Computes stress exposure between sampling rounds. | Working with real hardware (USB) or network upload. Safe band fixed at **24–31 °C**. |
-| **Fish Health Monitoring** | Caretaker photographs each sampled fish on the board. An image-quality check runs, a detector finds the fish and its regions, indicators are measured, and a regression gives the Fish Condition Index (FCI). Pond status is Normal, Watch or Refer to technician. | Pipeline is complete end to end. The quality check is real. The detector is a **labeled placeholder** until YOLO26 is trained. FCI regression fitting and grouped cross-validation are real. |
-| **Harvest Readiness** | Share of fish at target size, weight uniformity (CV), specific growth rate, a degree-2 growth curve once 5 or more rounds exist, condition factor, days of culture, and health clearance give Not Ready, Approaching or Ready. | Working. Target size and cutoffs are provisional. |
+It screens; it does **not** diagnose, recommend treatment, or make the harvest decision. No sensors are installed at the ponds.
 
-The **Evaluation** page reports what the panel needs:
-- FCI regression, with a comparison across indicator groups and leave-one-pond-out cross-validation
-- probe vs reference thermometer error
-- agreement with the technician's independent assessments (accuracy, Cohen's κ, confusion matrix)
-- the association between environment and fish condition
-- image length error
-- CSV exports
+## What is real and what is interim
 
-## Repository layout
+| Part | State |
+|---|---|
+| Login, roles (caretaker, technician, admin), profile, password | Working |
+| Ponds and stocking, users, cutoffs with a dated history, backup and restore | Working |
+| Sampling round: create, upload both sides per fish, retake, complete | Working |
+| Image-quality check (sharpness, exposure, glare) | Working. Thresholds are starting values to tune on pilot photos. |
+| Board markers, flat-view correction, cm scale | Working (ArUco `DICT_4X4_50`, printable board in Maintenance) |
+| Disease screening | **Working with the team's YOLOv8s** (`backend/models/yolov8s_best.pt`). YOLO26s can be swapped in through `.env`. |
+| Fish outline (length, area) | **Interim:** classical segmentation on the flat-view board, labeled "classical", until a YOLO segmentation model is trained (`TILAPIERS_SEG_WEIGHTS`). |
+| Weight regression: linear vs degree-2, backward elimination, grouped CV | Working. A **provisional** W = a·Lᵇ curve is used until 10 or more fish with scale weights exist and the admin presses *Fit*. |
+| Health and Harvest readiness rules | Working. **Cutoffs are provisional** until the admin marks them confirmed with the BFAR technician. |
+| Technician review of flagged fish, pond assessments | Working |
+| Evaluation: paper Tables 10 and 11, training curve, weight-model table, κ_w agreement, Refer recall, length and weight error, retake rate, CSV export | Working |
+| FAQs, About Us (editable by admin) | Working |
 
-```
-firmware/tilapiers_probe/   DS18B20 + LCD sketch (unchanged hardware from the previous build)
-backend/                    FastAPI + SQLite
-  tilapiers/rules/          pure, unit-tested decision rules (environment, health, harvest, evaluation)
-  tilapiers/vision/         image-quality check, detector interface, indicator measurement
-  tilapiers/sensors/        USB serial probe reader, demo simulator
-  tilapiers/services.py     domain logic on top of rules + database
-  tilapiers/api.py          HTTP API (/api/...)
-  tilapiers/seed.py         demo data for presentations
-  tests/                    pytest suite
-frontend/                   React + Vite dashboard (mobile-first for caretakers)
-docs/ARCHITECTURE.md        how the pieces fit together
-```
+**Differences from the paper (temporary):** local SQLite and file storage instead of a cloud database; YOLOv8s instead of YOLO26s for screening (YOLOv8s ranked first in four of the five weightings in Table 11); classical outline instead of YOLO26-seg.
 
-## Run it
+## Run the demo (for the panel)
 
-Requirements: Python 3.12, Node 20+.
-
-**Demo for the panel** (seeded ponds and a simulated probe, all clearly labeled):
+Requirements: Windows, Python 3.12, Node 20+. Copy `yolov8s_best.pt` into `backend/models/`.
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\run-demo.ps1
+powershell -ExecutionPolicy Bypass -File .\run-demo.ps1          # add -Reset for a fresh demo database
 ```
 
-Then open http://127.0.0.1:8000. Because it listens on all interfaces, a phone on the same Wi-Fi can open `http://<laptop-ip>:8000` and use the sampling flow with its camera.
+Open http://127.0.0.1:8000. The script also prints the laptop's address, so a phone on the same Wi-Fi can open it and take photos with its camera.
 
-**Field use with the real probe:**
+| Account | Password | Sees |
+|---|---|---|
+| caretaker | caretaker123 | Dashboard, new sampling round, results, history, FAQs |
+| technician | technician123 | Dashboard, review queue, evaluation |
+| admin | admin123 | Everything, plus Maintenance |
+
+Demo mode seeds two ponds with completed rounds (all marked **Demo data**). Pond 1 is Ready. Pond 2 is Approaching, with two fish referred to the technician.
+
+**Demo tips**
+- *Real fish on the board:* print the board (Maintenance → Board → PDF, at 100 % scale) and run a round with "Sampling board" on.
+- *Public dataset photos:* when creating the round, choose "Public / test photos (no board)". Fish are screened, but length and weight show "No scale: not measured".
+
+## Field use
 
 ```powershell
 cd backend
 py -3.12 -m venv .venv
+.venv\Scripts\pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 .venv\Scripts\pip install -r requirements.txt
-copy .env.example .env        # set TILAPIERS_SERIAL_POND, notification channel, etc.
+copy .env.example .env        # set TILAPIERS_SECRET_KEY and TILAPIERS_ADMIN_PASSWORD
 cd ..\frontend; npm install; npx vite build; cd ..\backend
 .venv\Scripts\python -m uvicorn tilapiers.main:app --host 0.0.0.0 --port 8000
 ```
 
-Plug the probe in by USB. It is discovered automatically; Bluetooth serial ports are skipped. If no probe is found, the pond shows **Probe offline**. The system never substitutes fake readings.
+On first start, one administrator account is created: `admin`, with the password from `TILAPIERS_ADMIN_PASSWORD` (default `admin123`). **Change it right away.**
 
-**Frontend development** (hot reload; proxies `/api` to the backend on port 8000):
-
-```powershell
-cd frontend; npm run dev        # http://localhost:5173
-```
-
-**Tests:**
+## Development
 
 ```powershell
-cd backend; .venv\Scripts\python -m pytest
+cd backend; .venv\Scripts\python -m pytest          # backend tests
+cd frontend; npm run dev                             # http://localhost:5173, proxies /api to :8000
 ```
 
-## Open decisions (study team)
-
-- **Alert channel:** email or SMS. Set `TILAPIERS_NOTIFY_CHANNEL`. Email works over SMTP today. SMS is recorded as *not sent* until a provider is chosen.
-- **Environment inputs beyond temperature:** currently season plus the caretaker's algae yes/no and optional water tests. Public weather data can be added later without changing the rules' interface.
-- **Thresholds:** every cutoff except the 24–31 °C band is marked *provisional* in Settings, to be set with the BFAR technician (Chapter 3).
-- **YOLO26 model:** train on the annotated sampling-board photos (classes `fish`, `eye`, `gill`, `fin`, `scale`), then set `TILAPIERS_YOLO_WEIGHTS`.
-
-## Previous study
-
-The earlier feeding/DO/temperature-only builds are preserved in git as the `legacy/*` branches and in `C:\CodingProjects\Aqua_Scan_legacy_inner.bundle`.
+See `docs/ARCHITECTURE.md` for how the pieces fit together. The design is in `docs/superpowers/specs/2026-10-28-tilapiers-final-design.md`.
