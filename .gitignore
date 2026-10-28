@@ -34,3 +34,6 @@ Thumbs.db
 
 # Agent scratch
 .superpowers/
+
+# Model weights are large; keep them out of git (copy into backend/models/)
+backend/models/*.pt

@@ -1,10 +1,9 @@
-"""Single source of truth for every rule cutoff.
+"""Single source of truth for every rule cutoff (paper Table 14).
 
-Only the temperature band (24-31 °C) is fixed by the study team. Every other
-value is PROVISIONAL: the study states that the Moderate/Critical limits, the
-health thresholds, the target market size and the readiness cutoffs are to be
-set with a BFAR technician (Chapter 3). They are editable from the Settings page
-and stored in the database; these are only the starting defaults.
+Every value is PROVISIONAL until the administrator records that it was confirmed
+with the BFAR technician. The paper leaves them as "[to be set with the BFAR
+technician]"; these defaults only let the prototype run. They are editable in
+Maintenance and stored in the database with a dated change history.
 """
 
 from dataclasses import asdict, dataclass, fields
@@ -12,31 +11,32 @@ from dataclasses import asdict, dataclass, fields
 
 @dataclass(frozen=True)
 class Thresholds:
-    # --- Environment ------------------------------------------------------
-    temp_min_c: float = 24.0  # fixed by the study team
-    temp_max_c: float = 31.0  # fixed by the study team
-    temp_moderate_margin_c: float = 1.0  # outside band by <= this -> Moderate, beyond -> Critical
-    do_good_min_ppm: float = 5.0  # BFAR-NCR consultation: at least 5 ppm
-    do_critical_below_ppm: float = 3.0
-    algae_report_valid_days: float = 3.0  # how long a caretaker's algae sighting counts
-    sensor_stale_after_s: float = 180.0  # no reading for this long -> probe offline
+    # --- Disease screening / Health status --------------------------------------
+    det_conf: float = 0.25  # minimum confidence for a screening result to be accepted
+    referral_conf: float = 0.50  # Aeromonas/TiLV at or above -> Refer to technician
+    k_min: float = 0.9  # Flores-Garcia et al. (2022): K below 0.9 usually means emaciation
+    k_max: float = 2.0
+    pond_watch_share: float = 0.10  # share of fish Watch/Refer -> pond Watch
+    pond_refer_share: float = 0.30  # share of fish Watch/Refer -> pond Refer (or any Refer fish)
 
-    # --- Fish health ------------------------------------------------------
-    fci_flag_below: float = 3.0  # Fish Condition Index on the 1-5 technician scale
-    health_watch_share: float = 0.10  # share of flagged fish -> Watch
-    health_refer_share: float = 0.30  # share of flagged fish -> Refer to technician
-    condition_factor_low: float = 1.4  # Fulton K below this -> Watch
-
-    # --- Harvest readiness ------------------------------------------------
-    target_weight_g: float = 250.0
-    ready_share_at_target: float = 0.80
-    approaching_share_at_target: float = 0.50
-    max_weight_cv: float = 0.25
-    culture_days_min: float = 120.0  # usual culture period: 4-6 months
+    # --- Harvest readiness -----------------------------------------------------
+    target_weight_g: float = 300.0
+    approaching_share: float = 0.50
+    ready_share: float = 0.80
+    max_cv: float = 0.25  # coefficient of variation of weight (fraction)
+    min_sgr: float = 0.5  # % body weight per day
+    culture_days_min: float = 120.0  # usual culture period, about 4-6 months
     culture_days_max: float = 180.0
     growth_poly_min_rounds: int = 5
-    recent_critical_days: float = 7.0
-    min_fish_per_round: int = 10
+
+    # --- Weight estimation -----------------------------------------------------
+    lw_a: float = 0.0141  # provisional W = a * L^b until a model is fitted
+    lw_b: float = 3.0
+    weight_fit_min_fish: int = 10
+
+    # --- Sampling board (inner rectangle between the marker corners) ----------
+    board_width_cm: float = 38.0
+    board_height_cm: float = 26.0
 
     def to_dict(self):
         return asdict(self)
@@ -46,23 +46,38 @@ class Thresholds:
         known = {f.name: f.type for f in fields(cls)}
         clean = {}
         for key, value in (data or {}).items():
-            if key not in known or value is None:
+            if key not in known or value is None or value == "":
                 continue
             clean[key] = int(value) if known[key] in (int, "int") else float(value)
         return cls(**clean)
 
 
-FIXED_KEYS = ("temp_min_c", "temp_max_c")
-
 GROUPS = {
-    "environment": [
-        "temp_min_c", "temp_max_c", "temp_moderate_margin_c", "do_good_min_ppm",
-        "do_critical_below_ppm", "algae_report_valid_days", "sensor_stale_after_s",
-    ],
-    "health": ["fci_flag_below", "health_watch_share", "health_refer_share", "condition_factor_low"],
-    "harvest": [
-        "target_weight_g", "ready_share_at_target", "approaching_share_at_target", "max_weight_cv",
-        "culture_days_min", "culture_days_max", "growth_poly_min_rounds", "recent_critical_days",
-        "min_fish_per_round",
-    ],
+    "health": ["det_conf", "referral_conf", "k_min", "k_max", "pond_watch_share", "pond_refer_share"],
+    "harvest": ["target_weight_g", "approaching_share", "ready_share", "max_cv", "min_sgr",
+                "culture_days_min", "culture_days_max", "growth_poly_min_rounds"],
+    "weight": ["lw_a", "lw_b", "weight_fit_min_fish"],
+    "board": ["board_width_cm", "board_height_cm"],
+}
+
+LABELS = {
+    "det_conf": "Detection confidence (minimum)",
+    "referral_conf": "Referral confidence (Aeromonas / TiLV)",
+    "k_min": "Condition factor K, lower limit",
+    "k_max": "Condition factor K, upper limit",
+    "pond_watch_share": "Pond Watch: share of fish Watch/Refer",
+    "pond_refer_share": "Pond Refer: share of fish Watch/Refer",
+    "target_weight_g": "Target market size (g)",
+    "approaching_share": "Share at target for Approaching",
+    "ready_share": "Share at target for Ready",
+    "max_cv": "Maximum weight CV",
+    "min_sgr": "Minimum specific growth rate (%/day)",
+    "culture_days_min": "Usual culture period, from (days)",
+    "culture_days_max": "Usual culture period, to (days)",
+    "growth_poly_min_rounds": "Rounds needed for the growth curve",
+    "lw_a": "Provisional length-weight a",
+    "lw_b": "Provisional length-weight b",
+    "weight_fit_min_fish": "Fish needed to fit the weight model",
+    "board_width_cm": "Board inner width (cm)",
+    "board_height_cm": "Board inner height (cm)",
 }

@@ -1,11 +1,13 @@
 """Runtime configuration from environment variables (see backend/.env.example)."""
 
 import os
+import secrets
 from dataclasses import dataclass
 from pathlib import Path
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
 REPO_DIR = BACKEND_DIR.parent
+MODELS_DIR = BACKEND_DIR / "models"
 
 
 def _bool(name, default=False):
@@ -26,6 +28,13 @@ def _load_dotenv(path):
         os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
 
 
+def _path(value):
+    if not value:
+        return None
+    p = Path(value)
+    return p if p.is_absolute() else BACKEND_DIR / p
+
+
 @dataclass
 class Settings:
     data_dir: Path
@@ -33,44 +42,25 @@ class Settings:
     uploads_dir: Path
     frontend_dist: Path
     demo: bool
-    sensor_mode: str  # auto | serial | simulate | off
-    serial_port: str | None
-    serial_pond_id: int
-    log_interval_s: float
-    ingest_token: str | None
-    notify_channel: str  # none | email | sms
-    smtp_host: str | None
-    smtp_port: int
-    smtp_user: str | None
-    smtp_password: str | None
-    smtp_from: str | None
-    smtp_starttls: bool
-    yolo_weights: str | None
+    yolo_weights: Path | None
+    seg_weights: Path | None
+    secret_key: str
+    benchmarks_dir: Path = MODELS_DIR / "benchmarks"
 
     @classmethod
     def from_env(cls, **overrides):
         _load_dotenv(BACKEND_DIR / ".env")
-        data_dir = Path(os.environ.get("TILAPIERS_DATA_DIR", BACKEND_DIR / "data"))
-        demo = _bool("TILAPIERS_DEMO")
+        data_dir = _path(os.environ.get("TILAPIERS_DATA_DIR")) or BACKEND_DIR / "data"
         values = dict(
             data_dir=data_dir,
             db_path=data_dir / "tilapiers.db",
             uploads_dir=data_dir / "uploads",
             frontend_dist=REPO_DIR / "frontend" / "dist",
-            demo=demo,
-            sensor_mode=os.environ.get("TILAPIERS_SENSOR", "simulate" if demo else "auto").lower(),
-            serial_port=os.environ.get("TILAPIERS_SERIAL_PORT") or None,
-            serial_pond_id=int(os.environ.get("TILAPIERS_SERIAL_POND", "1")),
-            log_interval_s=float(os.environ.get("TILAPIERS_LOG_INTERVAL_S", "10")),
-            ingest_token=os.environ.get("TILAPIERS_INGEST_TOKEN") or None,
-            notify_channel=os.environ.get("TILAPIERS_NOTIFY_CHANNEL", "none").lower(),
-            smtp_host=os.environ.get("SMTP_HOST") or None,
-            smtp_port=int(os.environ.get("SMTP_PORT", "587")),
-            smtp_user=os.environ.get("SMTP_USER") or None,
-            smtp_password=os.environ.get("SMTP_PASSWORD") or None,
-            smtp_from=os.environ.get("SMTP_FROM") or None,
-            smtp_starttls=_bool("SMTP_STARTTLS", True),
-            yolo_weights=os.environ.get("TILAPIERS_YOLO_WEIGHTS") or None,
+            demo=_bool("TILAPIERS_DEMO"),
+            yolo_weights=_path(os.environ.get("TILAPIERS_YOLO_WEIGHTS")) or MODELS_DIR / "yolov8s_best.pt",
+            seg_weights=_path(os.environ.get("TILAPIERS_SEG_WEIGHTS")),
+            # A random key means sessions end when the server restarts; set one in .env to keep them.
+            secret_key=os.environ.get("TILAPIERS_SECRET_KEY") or secrets.token_hex(32),
         )
         if "data_dir" in overrides:
             values["db_path"] = Path(overrides["data_dir"]) / "tilapiers.db"
