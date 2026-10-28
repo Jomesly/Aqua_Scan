@@ -83,3 +83,18 @@ def test_real_model_loads_and_runs_when_present(tmp_path):
     assert set(s.names.values()) == {"Healthy", "Aeromonas", "TiLV"}
     r = pipeline.process_photo(board_photo(), True, T, s, None, tmp_path / "r.jpg")
     assert r["ok"] and r["length_cm"] is not None
+
+
+class TwoBoxScreener(FakeScreener):
+    """Whole fish boxed Healthy with high confidence plus a lesion boxed TiLV."""
+
+    def predict(self, img, conf):
+        h, w = img.shape[:2]
+        dets = [{"cls": "Healthy", "conf": 0.8, "box": [0, 0, w, h]},
+                {"cls": "TiLV", "conf": 0.4, "box": [0, 0, w // 4, h // 4]}]
+        return [d for d in dets if d["conf"] >= conf]
+
+
+def test_disease_box_in_same_photo_takes_precedence(tmp_path):
+    r = pipeline.process_photo(board_photo(), True, T, TwoBoxScreener(), None, tmp_path / "e.jpg")
+    assert r["top"] == {"cls": "TiLV", "conf": 0.4}

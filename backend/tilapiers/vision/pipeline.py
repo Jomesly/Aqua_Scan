@@ -52,7 +52,11 @@ def process_photo(img, board_mode, t, screener, seg_model, annotated_path):
         dets = screener.predict(crop, t.det_conf)
         if not dets:
             reasons.append(f"No fish class above the detection threshold ({t.det_conf:.0%}): fish not screened.")
-    top = {"cls": dets[0]["cls"], "conf": dets[0]["conf"]} if dets else None
+    # A lesion boxed as Aeromonas/TiLV wins over a whole-fish Healthy box in the same photo, as it does
+    # across the two sides (paper Step 10): missing a sign is the costlier error.
+    disease = [d for d in dets if d["cls"] != "Healthy"]
+    best = max(disease or dets, key=lambda d: d["conf"]) if dets else None
+    top = {"cls": best["cls"], "conf": best["conf"]} if best else None
 
     vis = work.copy()
     if meas:
@@ -63,12 +67,11 @@ def process_photo(img, board_mode, t, screener, seg_model, annotated_path):
         cv2.line(vis, p, q2, (0, 220, 255), 2)
         cv2.putText(vis, f"L {meas['length_cm']:.1f} cm", (p[0], max(20, p[1] - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
                     (0, 220, 255), 2, cv2.LINE_AA)
-    if dets:
-        d = dets[0]
+    for d in sorted(dets, key=lambda d: d is best):
         x1, y1, x2, y2 = (int(v) for v in d["box"])
         ox, oy = crop_off
         color = COLORS.get(d["cls"], (200, 200, 200))
-        cv2.rectangle(vis, (x1 + ox, y1 + oy), (x2 + ox, y2 + oy), color, 3)
+        cv2.rectangle(vis, (x1 + ox, y1 + oy), (x2 + ox, y2 + oy), color, 3 if d is best else 1)
         label = f"{d['cls']} {d['conf']:.0%}"
         cv2.putText(vis, label, (x1 + ox + 4, y1 + oy + 24), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2, cv2.LINE_AA)
     scale = 1280 / max(vis.shape[:2])
