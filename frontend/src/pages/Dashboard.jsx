@@ -57,7 +57,7 @@ export default function Dashboard() {
       <div className="page-head row-between wrap">
         <div>
           <span className="eyebrow">Dashboard</span>
-          <h1>{greet}, {user.full_name.split(' ')[0]}</h1>
+          <h1>{greet}</h1>
           <p>Latest Health and Harvest readiness status of each pond, from its most recent completed sampling round.</p>
         </div>
         <div className="page-actions">

@@ -31,9 +31,9 @@ def size_stats(weights_g, t=Thresholds()):
         return {"n": 0, "mean_weight_g": None, "share_at_target": None, "cv": None}
     arr = np.asarray(w)
     mean = float(arr.mean())
-    cv = float(arr.std(ddof=1) / mean) if len(arr) > 1 and mean > 0 else 0.0
+    cv = float(arr.std(ddof=1) / mean) if len(arr) > 1 and mean > 0 else None  # needs 2+ fish
     return {"n": len(w), "mean_weight_g": round(mean, 2),
-            "share_at_target": round(float(np.mean(arr >= t.target_weight_g)), 4), "cv": round(cv, 4)}
+            "share_at_target": round(float(np.mean(arr >= t.target_weight_g)), 4), "cv": round(cv, 4) if cv is not None else None}
 
 
 def growth_trend(points, t=Thresholds()):
@@ -78,8 +78,8 @@ def readiness(weights_g, mean_k, days_of_culture, growth, pond_health, t=Thresho
     criteria = [
         {"key": "share", "label": f"Fish at or above {t.target_weight_g:g} g", "value": f"{share:.0%}",
          "target": f">= {t.ready_share:.0%}", "passed": share >= t.ready_share},
-        {"key": "cv", "label": "Weight uniformity (CV)", "value": f"{cv:.0%}",
-         "target": f"<= {t.max_cv:.0%}", "passed": cv <= t.max_cv},
+        {"key": "cv", "label": "Weight uniformity (CV)", "value": f"{cv:.0%}" if cv is not None else "needs 2+ fish",
+         "target": f"<= {t.max_cv:.0%}", "passed": cv is not None and cv <= t.max_cv},
         {"key": "growth", "label": "Growth", "value": growth_val,
          "target": "curve rising" if poly else f"SGR >= {t.min_sgr:g} %/day", "passed": growth_ok},
         {"key": "k", "label": "Mean condition factor K",

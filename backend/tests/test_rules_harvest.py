@@ -42,3 +42,10 @@ def test_growth_trend_poly_from_five_rounds():
     g = harvest.growth_trend(pts, T)
     assert g["method"] == "polynomial" and g["poly"]["r2"] > 0.99
     assert harvest.growth_trend(pts[:4], T)["method"] == "sgr"
+
+
+def test_single_fish_cannot_pass_uniformity():
+    r = harvest.readiness([320], 1.5, 150, GROWING, "Normal", T)
+    cv = next(c for c in r["criteria"] if c["key"] == "cv")
+    assert cv["passed"] is False
+    assert r["status"] != harvest.READY

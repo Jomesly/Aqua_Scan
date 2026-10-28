@@ -101,7 +101,7 @@ function FishCapture({ fish, onChange, onDelete, boardMode }) {
       </div>
       {fish.photos.some((p) => p.ok) && (
         <div className="fish-result">
-          <div className="row wrap gap-s"><ClassBadge cls={fish.cls} conf={fish.conf} /><HealthBadge value={fish.status} /></div>
+          <div className="row wrap gap-s">{fish.cls && <ClassBadge cls={fish.cls} conf={fish.conf} />}<HealthBadge value={fish.status} /></div>
           {boardMode && <Measure fish={fish} />}
           <ul className="reasons">{fish.reasons.map((r) => <li key={r}>{r}</li>)}</ul>
         </div>
@@ -237,7 +237,7 @@ function Results({ round, reload, user }) {
                       )) : <span className="thumb-ph" title="No photos (demo data)"><ImageOff size={16} aria-hidden="true" /></span>}
                     </div>
                   </td>
-                  <td><ClassBadge cls={f.cls} conf={f.conf} /></td>
+                  <td>{f.cls ? <ClassBadge cls={f.cls} conf={f.conf} /> : <span className="subtle">—</span>}</td>
                   <td><HealthBadge value={f.status} /></td>
                   <td className="num">{fmtNum(f.length_cm)}</td>
                   <td className="num">{fmtNum(f.est_weight_g, 0)}</td>
