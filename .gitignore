@@ -35,5 +35,6 @@ Thumbs.db
 # Agent scratch
 .superpowers/
 
-# Model weights are large; keep them out of git (copy into backend/models/)
+# Model weights: only the team's screening model is committed
 backend/models/*.pt
+!backend/models/yolov8s_best.pt

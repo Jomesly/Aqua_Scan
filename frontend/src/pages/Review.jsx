@@ -36,7 +36,7 @@ function FishReview({ fish, onDone }) {
           <ul className="reasons">{fish.reasons.map((r) => <li key={r}>{r}</li>)}</ul>
           <p className="small muted">L {fmtNum(fish.length_cm)} cm · est. {fmtNum(fish.est_weight_g, 0)} g · K {fmtNum(fish.k, 2)}</p>
           <fieldset className="radio-list">
-            <legend className="label-text">Your check of the visible signs</legend>
+            <legend className="label-text">Your check of the visible defect</legend>
             {Object.entries(SIGNS_LABEL).map(([k, label]) => (
               <label key={k}><input type="radio" name={`signs-${fish.id}`} value={k} checked={signs === k} onChange={() => setSigns(k)} />{label}</label>
             ))}

@@ -1,13 +1,13 @@
 # Demo photos
 
-Public tilapia photos for showing disease screening without a sampling board. Create the round with
+Public tilapia photos for showing defect screening without a sampling board. Create the round with
 **Public / test photos (no board)**, add one fish per pair, and upload Side A and Side B.
 
 | Fish | Expected screening | Expected Health status |
 |---|---|---|
-| fish1, fish2 | TiLV signs | Refer to technician |
-| fish3, fish4 | Aeromonas signs | Refer to technician |
-| fish5, fish6 | Healthy | Normal |
+| fish1, fish2 | Skin erosion | Refer to technician |
+| fish3, fish4 | Red sores | Refer to technician |
+| fish5, fish6 | No visible defect | Normal |
 
 Each photo was checked through the app's pipeline with `yolov8s_best.pt` on 2026-10-28 (confidence 72–97 %).
 

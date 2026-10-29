@@ -11,27 +11,27 @@ def test_condition_factor_formula():
 
 
 def test_healthy_with_k_in_range_is_normal():
-    assert health.fish_status("Healthy", 0.9, 1.2, T)["status"] == health.NORMAL
+    assert health.fish_status("No visible defect", 0.9, 1.2, T)["status"] == health.NORMAL
 
 
 def test_healthy_with_low_k_is_watch():
-    r = health.fish_status("Healthy", 0.9, 0.8, T)
+    r = health.fish_status("No visible defect", 0.9, 0.8, T)
     assert r["status"] == health.WATCH
     assert any("K" in x for x in r["reasons"])
 
 
 def test_healthy_without_k_is_normal_and_says_k_not_measured():
-    r = health.fish_status("Healthy", 0.9, None, T)
+    r = health.fish_status("No visible defect", 0.9, None, T)
     assert r["status"] == health.NORMAL
     assert any("K not measured" in x for x in r["reasons"])
 
 
 def test_disease_below_referral_cutoff_is_watch():
-    assert health.fish_status("TiLV", 0.4, 1.2, T)["status"] == health.WATCH
+    assert health.fish_status("Skin erosion", 0.4, 1.2, T)["status"] == health.WATCH
 
 
 def test_disease_at_referral_cutoff_is_refer():
-    assert health.fish_status("Aeromonas", 0.5, 1.2, T)["status"] == health.REFER
+    assert health.fish_status("Red sores", 0.5, 1.2, T)["status"] == health.REFER
 
 
 def test_no_screening_result_is_unscreened():
@@ -72,3 +72,10 @@ def test_pond_mostly_unscreened_is_insufficient():
 def test_pond_enough_screened_is_assessed():
     s = [health.UNSCREENED] * 2 + [health.NORMAL] * 8
     assert health.pond_status(s, T)["status"] == health.NORMAL
+
+
+def test_reasons_name_the_visible_defect_not_a_disease():
+    r = health.fish_status("Skin erosion", 0.8, None, T)
+    text = " ".join(r["reasons"])
+    assert "Skin erosion" in text
+    assert "TiLV" not in text and "Aeromonas" not in text

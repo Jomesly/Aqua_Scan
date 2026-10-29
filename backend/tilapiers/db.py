@@ -111,7 +111,27 @@ class Database:
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA foreign_keys=ON")
         self.conn.executescript(SCHEMA)
+        self._rename_disease_labels()
         self.conn.commit()
+
+    def _rename_disease_labels(self):
+        """Older records named diseases (TiLV, Aeromonas); the app now flags visible defects. Idempotent."""
+        from .rules.health import DEFECT_DESCRIPTIONS, EROSION, NO_DEFECT, RED_SORES
+
+        for old, new in (("TiLV", EROSION), ("Aeromonas", RED_SORES), ("Healthy", NO_DEFECT)):
+            self.conn.execute("UPDATE fish SET cls = ? WHERE cls = ?", (new, old))
+        for old, new in (("tilv", "erosion"), ("aeromonas", "red_sores")):
+            self.conn.execute("UPDATE fish SET tech_signs = ? WHERE tech_signs = ?", (new, old))
+        texts = [("No visible signs screened.", "No visible defect flagged.")]
+        for old, new in (("TiLV", EROSION), ("Aeromonas", RED_SORES)):
+            seen = f"{new} ({DEFECT_DESCRIPTIONS[new]})"
+            texts += [(f"Possible signs consistent with {old},", f"Possible {seen},"),
+                      (f"Signs consistent with {old} at", f"{seen} flagged at"), (f'"{old}"', f'"{new}"')]
+        texts.append(('"Healthy"', f'"{NO_DEFECT}"'))
+        for table, col in (("fish", "reasons_json"), ("rounds", "snapshot_json"), ("photos", "result_json")):
+            for old, new in texts:
+                self.conn.execute(f"UPDATE {table} SET {col} = REPLACE({col}, ?, ?) WHERE {col} LIKE ?",
+                                  (old, new, f"%{old}%"))
 
     def all(self, sql, params=()):
         with self._lock:

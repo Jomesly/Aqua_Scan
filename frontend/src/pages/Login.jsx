@@ -40,7 +40,7 @@ export default function Login() {
         <div className="login-panel-copy">
           <h2>Fish health, weight and harvest readiness for outdoor Nile tilapia ponds.</h2>
           <ul>
-            <li><ShieldCheck size={18} aria-hidden="true" />Screens each sampled fish for signs of Aeromonas and TiLV</li>
+            <li><ShieldCheck size={18} aria-hidden="true" />Flags visible skin defects on each sampled fish: skin erosion and red sores</li>
             <li><Scale size={18} aria-hidden="true" />Estimates weight from a photo on the measuring board</li>
             <li><Sprout size={18} aria-hidden="true" />Tracks growth toward harvest size, round by round</li>
           </ul>

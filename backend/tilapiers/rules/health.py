@@ -1,7 +1,7 @@
 """Fish Health Monitoring rules (paper Figure 11, steps 1-3).
 
-Screening finds visible signs consistent with Aeromonas or TiLV; it is not a
-diagnosis. A flagged fish is referred to the technician.
+Screening flags visible skin defects (skin erosion, red sores); it does not name
+a disease and is not a diagnosis. A flagged fish is referred to the technician.
 """
 
 from .thresholds import Thresholds
@@ -11,7 +11,16 @@ WATCH = "Watch"
 REFER = "Refer to technician"
 UNSCREENED = "Not screened"
 INSUFFICIENT = "Insufficient data"
-DISEASE_CLASSES = ("Aeromonas", "TiLV")
+NO_DEFECT = "No visible defect"
+EROSION = "Skin erosion"
+RED_SORES = "Red sores"
+DEFECT_CLASSES = (EROSION, RED_SORES)
+CLASSES = (NO_DEFECT, *DEFECT_CLASSES)
+# What each flag looks like on the fish, for reasons and help text.
+DEFECT_DESCRIPTIONS = {
+    EROSION: "worn or eroded skin, missing scales or pale patches",
+    RED_SORES: "red, bleeding sores, ulcers or reddened fins",
+}
 
 
 def condition_factor(weight_g, length_cm):
@@ -25,17 +34,18 @@ def fish_status(cls, conf, k, t=Thresholds()):
     if cls is None:
         return {"status": UNSCREENED, "reasons": ["No fish detected above the confidence threshold."]}
     reasons = []
-    if cls in DISEASE_CLASSES:
+    if cls in DEFECT_CLASSES:
+        seen = f"{cls} ({DEFECT_DESCRIPTIONS[cls]})"
         if conf is not None and conf >= t.referral_conf:
             status = REFER
-            reasons.append(f"Signs consistent with {cls} at {conf:.0%} confidence (referral cutoff "
+            reasons.append(f"{seen} flagged at {conf:.0%} confidence (referral cutoff "
                            f"{t.referral_conf:.0%}). Set the fish apart until the technician checks it.")
         else:
             status = WATCH
-            reasons.append(f"Possible signs consistent with {cls}, below the referral cutoff.")
+            reasons.append(f"Possible {seen}, below the referral cutoff.")
     else:
         status = NORMAL
-        reasons.append("No visible signs screened.")
+        reasons.append("No visible defect flagged.")
     if k is None:
         reasons.append("K not measured (no scale or no weight).")
     elif k < t.k_min or k > t.k_max:

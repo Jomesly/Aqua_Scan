@@ -13,7 +13,7 @@ from dataclasses import asdict, dataclass, fields
 class Thresholds:
     # --- Disease screening / Health status --------------------------------------
     det_conf: float = 0.25  # minimum confidence for a screening result to be accepted
-    referral_conf: float = 0.50  # Aeromonas/TiLV at or above -> Refer to technician
+    referral_conf: float = 0.50  # skin erosion / red sores at or above -> Refer to technician
     k_min: float = 0.9  # Flores-Garcia et al. (2022): K below 0.9 usually means emaciation
     k_max: float = 2.0
     pond_watch_share: float = 0.10  # share of fish Watch/Refer -> pond Watch
@@ -70,7 +70,7 @@ GROUPS = {
 
 LABELS = {
     "det_conf": "Detection confidence (minimum)",
-    "referral_conf": "Referral confidence (Aeromonas / TiLV)",
+    "referral_conf": "Referral confidence (skin erosion / red sores)",
     "k_min": "Condition factor K, lower limit",
     "k_max": "Condition factor K, upper limit",
     "pond_watch_share": "Pond Watch: share of fish Watch/Refer",

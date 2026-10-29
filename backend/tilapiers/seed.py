@@ -23,10 +23,15 @@ FAQS = """## Setting up the sampling station
 - After the photos, weigh the fish on the facility scale and measure its total length with the ruler, then enter both values.
 
 ## Reading the Health status
-- **Normal**: no visible signs were screened and the condition factor is in range.
-- **Watch**: possible signs below the referral cutoff, or a condition factor outside the range.
-- **Refer to technician**: signs consistent with Aeromonas or TiLV at or above the referral cutoff. Set the fish apart until the technician checks it.
-- Screening is **not a diagnosis**. A confirmed diagnosis needs laboratory tests.
+- **Normal**: no visible defect was flagged and the condition factor is in range.
+- **Watch**: a possible defect below the referral cutoff, or a condition factor outside the range.
+- **Refer to technician**: a visible skin defect flagged at or above the referral cutoff. Set the fish apart until the technician checks it.
+- Screening is **not a diagnosis** and does not name a disease. A confirmed diagnosis needs laboratory tests.
+
+## What the defect flags mean
+- **Skin erosion**: worn or eroded skin, missing scales or pale patches.
+- **Red sores**: red, bleeding sores, ulcers or reddened fins.
+- **No visible defect**: nothing was flagged on the photographed sides.
 
 ## Reading the Harvest readiness status
 - The status combines five indicators: the share of fish at the target size, weight uniformity (CV), growth, condition factor K, and days of culture.
@@ -44,7 +49,7 @@ ABOUT = """**Tilapiers** is a smart, web-based hybrid framework of YOLO detector
 It turns the caretaker's routine inspection into a standardized, recorded process. The only equipment it needs is a smartphone on a stand, a sampling board with four corner markers, and the facility's scale and ruler. No sensors are installed at the ponds.
 
 ### Modules
-- **Fish Health Monitoring**: screens each sampled fish as Healthy, Aeromonas or TiLV and gives the fish and the pond a status: Normal, Watch or Refer to technician.
+- **Fish Health Monitoring**: flags visible skin defects on each sampled fish (skin erosion, red sores) and gives the fish and the pond a status: Normal, Watch or Refer to technician.
 - **Fish Weight Estimation**: measures length and area on the corrected board photo, estimates weight by regression, and gives the sample's average weight and the pond's biomass.
 - **Harvest Readiness Assessment**: combines size, uniformity, growth, condition and days of culture into Not Ready, Approaching or Ready, with health as a clearance check.
 
@@ -108,9 +113,9 @@ def seed_demo(svc):
                 ruler = (w / 0.0145) ** (1 / 3) * rng.uniform(0.985, 1.015)
                 img_len = ruler * rng.uniform(0.97, 1.03)
                 area = 0.21 * img_len ** 2 * rng.uniform(0.96, 1.04)
-                cls, conf = "Healthy", round(rng.uniform(0.82, 0.97), 3)
+                cls, conf = health.NO_DEFECT, round(rng.uniform(0.82, 0.97), 3)
                 if p_i == 1 and latest and k in (3, 11):
-                    cls, conf = "Aeromonas", (0.62, 0.71)[k == 11]
+                    cls, conf = health.RED_SORES, (0.62, 0.71)[k == 11]
                 fish = svc.add_fish(rnd["id"], {"scale_weight_g": round(w, 1), "ruler_length_cm": round(ruler, 1)},
                                     source="demo")
                 svc.db.update("fish", fish["id"], {"cls": cls, "conf": conf, "sides": 2,
@@ -135,7 +140,7 @@ def seed_demo(svc):
             svc.set_round_assessment(rid, tech_h if tech_h in ("Normal", "Watch", "Refer to technician") else None,
                                      tech_r, "technician")
             for f in svc.db.all("SELECT id, cls FROM fish WHERE round_id = ? LIMIT 6", (rid,)):
-                svc.review_fish(f["id"], "none" if f["cls"] == "Healthy" else "aeromonas", None, "technician")
+                svc.review_fish(f["id"], "none" if f["cls"] == health.NO_DEFECT else "red_sores", None, "technician")
         elif p_i == 0:
             svc.set_round_assessment(rid, health.NORMAL, "Ready", "technician")
     svc.db.set_setting("demo_seeded", json.dumps(True))

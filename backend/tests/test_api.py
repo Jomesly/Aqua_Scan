@@ -9,7 +9,7 @@ from tilapiers.main import create_app
 
 @pytest.fixture
 def app_client(settings):
-    app = create_app(settings, screener=FakeScreener("TiLV", 0.8))
+    app = create_app(settings, screener=FakeScreener("Skin erosion", 0.8))
     with TestClient(app) as c:
         svc = app.state.services
         svc.create_user({"username": "care", "password": "care123", "role": "caretaker"})
@@ -62,7 +62,7 @@ def test_full_round_flow(app_client):
     r = app_client.post(f"/api/fish/{fish['id']}/photos/A", files={"file": ("a.jpg", jpg, "image/jpeg")})
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["photo"]["ok"] and body["fish"]["cls"] == "TiLV"
+    assert body["photo"]["ok"] and body["fish"]["cls"] == "Skin erosion"
     assert app_client.get(body["photo"]["annotated_url"]).status_code == 200
     app_client.patch(f"/api/fish/{fish['id']}", json={"scale_weight_g": 120, "ruler_length_cm": 20.2})
     done = app_client.post(f"/api/rounds/{rnd['id']}/complete").json()
@@ -71,7 +71,7 @@ def test_full_round_flow(app_client):
     login(app_client, "tech", "tech123")
     q = app_client.get("/api/review/queue").json()
     assert q["fish"][0]["id"] == fish["id"]
-    r = app_client.post(f"/api/fish/{fish['id']}/review", json={"signs": "tilv", "note": "eye cloudy"})
+    r = app_client.post(f"/api/fish/{fish['id']}/review", json={"signs": "erosion", "note": "eye cloudy"})
     assert r.status_code == 200
     r = app_client.post(f"/api/rounds/{rnd['id']}/assessment",
                         json={"tech_health": "Refer to technician", "tech_readiness": "Not Ready"})

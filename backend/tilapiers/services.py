@@ -21,7 +21,7 @@ from .rules.thresholds import FRACTIONS, GROUPS, LABELS, MIN_INT, POSITIVE, Thre
 from .vision import pipeline, quality
 
 SIDES = ("A", "B")
-TECH_SIGNS = ("none", "aeromonas", "tilv", "other")
+TECH_SIGNS = ("none", "erosion", "red_sores", "other")
 HEALTH_LABELS = [health.NORMAL, health.WATCH, health.REFER]
 READY_LABELS = [harvest.NOT_READY, harvest.APPROACHING, harvest.READY]
 
@@ -414,7 +414,7 @@ class Services:
             points.append((r["days_of_culture"], size["mean_weight_g"]))
         growth = harvest.growth_trend(points, t)
         ready = harvest.readiness(weights, mean_k, r["days_of_culture"], growth, h["status"], t)
-        classes = {c: sum(1 for f in fish if f["cls"] == c) for c in ("Healthy", "Aeromonas", "TiLV")}
+        classes = {c: sum(1 for f in fish if f["cls"] == c) for c in health.CLASSES}
         model = self.active_weight_model()
         return {
             "health": h, "readiness": ready, "growth": growth,
@@ -493,7 +493,7 @@ class Services:
     def review_fish(self, fish_id, signs, note, user):
         self.get_fish(fish_id)
         if signs not in TECH_SIGNS:
-            raise Invalid("Signs must be none, aeromonas, tilv or other.")
+            raise Invalid("Signs must be none, erosion, red_sores or other.")
         self.db.update("fish", fish_id, {"tech_signs": signs, "tech_note": note, "reviewed_by": user,
                                          "reviewed_at": time.time()})
         return self.get_fish(fish_id)
@@ -565,10 +565,11 @@ class Services:
                 rp.append((harvest.APPROACHING if sys_r == harvest.SIZE_REVIEW else sys_r, r["tech_readiness"]))
         fsrc = "" if include_demo else " AND f.source = 'real'"
         fish = self.db.all("SELECT f.* FROM fish f JOIN rounds r ON r.id = f.round_id WHERE 1 = 1" + fsrc)
-        tech_map = {"none": "Healthy", "aeromonas": "Aeromonas", "tilv": "TiLV", "other": "Other signs"}
-        screen_labels = ["Healthy", "Aeromonas", "TiLV"]
+        tech_map = {"none": health.NO_DEFECT, "erosion": health.EROSION, "red_sores": health.RED_SORES,
+                    "other": "Other defect"}
+        screen_labels = list(health.CLASSES)
         screen_pairs = [(f["cls"] or "Not screened", tech_map[f["tech_signs"]]) for f in fish if f["tech_signs"]]
-        refer_pairs = [(f["status"], health.REFER if f["tech_signs"] in ("aeromonas", "tilv") else "no")
+        refer_pairs = [(f["status"], health.REFER if f["tech_signs"] in ("erosion", "red_sores") else "no")
                        for f in fish if f["tech_signs"]]
         sm = ev.agreement(screen_pairs, screen_labels)
         per_round = {}

@@ -39,4 +39,4 @@ def test_photo_is_stretched_to_the_training_size():
 
 def test_boxes_are_mapped_back_to_the_original_photo():
     out = _screener(FakeYolo()).predict(np.zeros((200, 600, 3), np.uint8), 0.25)
-    assert out == [{"cls": "TiLV", "conf": 0.9, "box": [60.0, 50.0, 300.0, 150.0]}]
+    assert out == [{"cls": "Skin erosion", "conf": 0.9, "box": [60.0, 50.0, 300.0, 150.0]}]

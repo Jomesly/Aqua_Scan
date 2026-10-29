@@ -125,7 +125,7 @@ export default function Evaluation() {
         </div>
         <Notice kind="info">Deployed screening model: <strong>{b.deployed?.name}</strong>
           {b.deployed?.available ? ` (${b.deployed.classes.join(', ')})` : `, unavailable: ${b.deployed?.error}`}.
-          Aeromonas is the weakest class (AP50 0.30). More Aeromonas photos checked by the technician are the first improvement.</Notice>
+          Red sores is the weakest flag (AP50 0.30, trained as Aeromonas). More red-sore photos checked by the technician are the first improvement.</Notice>
       </Card>
 
       {b.curve && (
@@ -144,10 +144,10 @@ export default function Evaluation() {
         </Card>
       )}
 
-      <Card title="Screening vs technician" icon={Stethoscope} hint={`${data.screening.n_reviewed} fish checked by the technician. Only checked fish count. Fish checked from the review queue were flagged by the system, so also check a sample of Normal fish on each round's page to measure missed signs.`}>
+      <Card title="Screening vs technician" icon={Stethoscope} hint={`${data.screening.n_reviewed} fish checked by the technician. Only checked fish count. Fish checked from the review queue were flagged by the system, so also check a sample of Normal fish on each round's page to measure missed defects.`}>
         <div className="stats three">
           <Stat label="Accuracy (3 classes)" value={fmtPct(data.screening.accuracy, 1)} />
-          <Stat label="Recall of Refer (fish)" value={fmtPct(data.screening.fish_refer_recall, 1)} title="Share of fish the technician saw signs on that the system referred" />
+          <Stat label="Recall of Refer (fish)" value={fmtPct(data.screening.fish_refer_recall, 1)} title="Share of fish the technician saw a defect on that the system referred" />
           <Stat label="Other / not screened" value={data.screening.other_or_unscreened} />
         </div>
         <Confusion m={data.screening} rowLabel="Screening" />

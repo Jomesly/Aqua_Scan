@@ -1,6 +1,6 @@
 import {
   CheckCircle2, CircleDashed, Clock, Database, Eye, FlaskConical, HelpCircle, ShieldAlert, ShieldCheck,
-  Stethoscope, TrendingUp, Bug, Biohazard,
+  Stethoscope, TrendingUp, Droplet, Eraser,
 } from 'lucide-react';
 
 const HEALTH = {
@@ -20,9 +20,9 @@ const READINESS = {
 };
 
 const CLASSES = {
-  Healthy: { tone: 'good', Icon: ShieldCheck, label: 'Healthy' },
-  Aeromonas: { tone: 'critical', Icon: Bug, label: 'Aeromonas signs' },
-  TiLV: { tone: 'critical', Icon: Biohazard, label: 'TiLV signs' },
+  'No visible defect': { tone: 'good', Icon: ShieldCheck },
+  'Skin erosion': { tone: 'critical', Icon: Eraser },
+  'Red sores': { tone: 'critical', Icon: Droplet },
 };
 
 function Badge({ map, value, size, prefix, suffix }) {

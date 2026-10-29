@@ -8,7 +8,7 @@ Tilapiers is a web app for the caretaker's sampling round. The caretaker photogr
 
 1. checks image quality, finds the markers and corrects the photo to a flat view with a known scale;
 2. outlines the fish and measures its **length and area**;
-3. screens it with the team's YOLO model as **Healthy, Aeromonas or TiLV**;
+3. screens it with the team's YOLO model and flags visible skin defects: **Skin erosion** (eroded skin, missing scales, pale patches), **Red sores** (bleeding sores, ulcers, reddened fins) or **No visible defect**. It does not name a disease;
 4. estimates its **weight** by regression and computes the condition factor K;
 5. gives the fish and the pond a **Health status** (Normal / Watch / Refer to technician) and the pond a **Harvest readiness status** (Not Ready / Approaching / Ready, with health as a clearance check).
 
@@ -35,7 +35,7 @@ It screens; it does **not** diagnose, recommend treatment, or make the harvest d
 
 ## Run the demo (for the panel)
 
-Requirements: Windows, Python 3.12, Node 20+. Copy `yolov8s_best.pt` into `backend/models/`.
+Requirements: Windows, Python 3.12, Node 20+. The screening model `backend/models/yolov8s_best.pt` is included in the repo.
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\run-demo.ps1          # add -Reset for a fresh demo database
@@ -53,7 +53,7 @@ Demo mode seeds two ponds with completed rounds (all marked **Demo data**). Pond
 
 **Demo tips**
 - *Real fish on the board:* print the board (Maintenance → Board → PDF, at 100 % scale) and run a round with "Sampling board" on.
-- *Public dataset photos:* when creating the round, choose "Public / test photos (no board)". Fish are screened, but length and weight show "No scale: not measured". Checked TiLV, Aeromonas and Healthy pairs are in `docs/demo-photos/`. In this mode a photo that fails the quality check is still screened, with a note; with the board it must be retaken.
+- *Public dataset photos:* when creating the round, choose "Public / test photos (no board)". Fish are screened, but length and weight show "No scale: not measured". Checked skin-erosion, red-sore and no-defect pairs are in `docs/demo-photos/`. In this mode a photo that fails the quality check is still screened, with a note; with the board it must be retaken.
 
 ## Field use
 

@@ -165,7 +165,7 @@ function Capture({ round, reload, setRound }) {
       ) : (
         <Notice kind="info">
           For each fish: upload a photo of <strong>Side A</strong> and, if you have one, <strong>Side B</strong>. Each photo is screened for
-          signs of Aeromonas and TiLV. Without the board, length and weight are not measured.
+          visible skin defects (skin erosion, red sores). Without the board, length and weight are not measured.
         </Notice>
       )}
       {round.fish.length === 0 && <p className="muted">No fish yet. Add the first sampled fish.</p>}
@@ -242,8 +242,8 @@ function Results({ round, reload, user }) {
       <RoundAssessment a={round.assessment} />
       {can.review(user) && <TechAssessment round={round} onSaved={reload} />}
       <Card title="Sampled fish" flush hint={can.review(user)
-        ? 'Screening shows visible signs only. It is not a diagnosis. Record your check of any fish, not only the flagged ones, so the evaluation also counts the fish the system called Normal.'
-        : 'Screening shows visible signs only. It is not a diagnosis.'}>
+        ? 'Screening flags visible defects only. It does not name a disease and is not a diagnosis. Record your check of any fish, not only the flagged ones, so the evaluation also counts the fish the system called Normal.'
+        : 'Screening flags visible defects only. It does not name a disease and is not a diagnosis.'}>
         <div className="table-wrap">
           <table className="data">
             <thead>

@@ -1,9 +1,12 @@
 """Disease screening detector (paper YOLO26 Disease Screening module).
 
-Loads any Ultralytics detect weights with the classes Healthy / Aeromonas / TiLV.
+Loads any Ultralytics detect weights trained with the classes Healthy / Aeromonas / TiLV.
 The study team's trained YOLOv8s is the default; YOLO26s weights drop in through
 TILAPIERS_YOLO_WEIGHTS. If the weights cannot be loaded, the screener reports
 itself unavailable. It never invents a class.
+
+The app flags visible defects; it does not name diseases. The training labels are
+translated here, once, so everything after the model sees only defect names.
 """
 
 import logging
@@ -12,11 +15,15 @@ from pathlib import Path
 
 import cv2
 
+from ..rules.health import EROSION, NO_DEFECT, RED_SORES
+
 log = logging.getLogger(__name__)
-EXPECTED = {"Healthy", "Aeromonas", "TiLV"}
+# Training label -> visible defect shown in the app.
+DEFECT_OF_LABEL = {"Healthy": NO_DEFECT, "TiLV": EROSION, "Aeromonas": RED_SORES}
+EXPECTED = set(DEFECT_OF_LABEL)
 # Roboflow exports stretch every training image to 640x640 (no letterbox) by default, so photos are
 # stretched the same way before screening. On public Aeromonas/TiLV photos this found more fish and
-# stopped diseased fish in long, thin photos from being called Healthy.
+# stopped defects on long, thin photos from being missed.
 IMGSZ = 640
 
 
@@ -57,13 +64,13 @@ class Screener:
         out = []
         for box in res.boxes:
             x1, y1, x2, y2 = box.xyxy[0].tolist()
-            out.append({"cls": self.names[int(box.cls)], "conf": round(float(box.conf), 4),
+            out.append({"cls": DEFECT_OF_LABEL[self.names[int(box.cls)]], "conf": round(float(box.conf), 4),
                         "box": [round(x1 * sx, 1), round(y1 * sy, 1), round(x2 * sx, 1), round(y2 * sy, 1)]})
         return sorted(out, key=lambda d: d["conf"], reverse=True)
 
     def info(self):
         return {"name": self.name, "available": self.available, "error": self.error,
-                "classes": list(self.names.values()), "path": str(self.path) if self.path else None}
+                "classes": [DEFECT_OF_LABEL.get(n, n) for n in self.names.values()], "path": str(self.path) if self.path else None}
 
 
 def load_seg(weights_path):

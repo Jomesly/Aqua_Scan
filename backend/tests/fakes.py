@@ -6,7 +6,7 @@ class FakeScreener:
     error = None
     names = {0: "Healthy", 1: "Aeromonas", 2: "TiLV"}
 
-    def __init__(self, cls="Healthy", conf=0.9):
+    def __init__(self, cls="No visible defect", conf=0.9):
         self.cls, self.conf = cls, conf
 
     def predict(self, img, conf):

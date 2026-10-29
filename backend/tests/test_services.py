@@ -14,7 +14,7 @@ def _jpg(img):
 @pytest.fixture
 def svc(settings):
     settings.data_dir.mkdir(parents=True, exist_ok=True)
-    s = Services(Database(settings.db_path), settings, FakeScreener("Aeromonas", 0.8), None)
+    s = Services(Database(settings.db_path), settings, FakeScreener("Red sores", 0.8), None)
     s.update_thresholds({"board_width_cm": 38.0, "board_height_cm": 26.0}, "test", confirmed=False)
     return s
 
@@ -30,7 +30,7 @@ def test_upload_side_a_screens_and_measures(svc, rnd):
     out = svc.upload_photo(fish["id"], "A", _jpg(board_photo()))
     assert out["photo"]["ok"], out["photo"]["result"]["reasons"]
     f = out["fish"]
-    assert f["cls"] == "Aeromonas" and f["conf"] == 0.8
+    assert f["cls"] == "Red sores" and f["conf"] == 0.8
     assert abs(f["length_cm"] - 20) < 1
     assert f["status"] == "Refer to technician"
     assert f["est_weight_g"] is not None and f["k"] is not None
@@ -98,3 +98,30 @@ def test_out_of_range_cutoffs_rejected(svc, changes):
     from tilapiers.services import Invalid
     with pytest.raises(Invalid):
         svc.update_thresholds(changes, "admin")
+
+
+def test_technician_records_defect_codes_not_disease_codes(svc, rnd):
+    fish = svc.add_fish(rnd["id"])
+    assert svc.review_fish(fish["id"], "red_sores", None, "tech")["tech_signs"] == "red_sores"
+    with pytest.raises(Exception):
+        svc.review_fish(fish["id"], "tilv", None, "tech")
+
+
+def test_old_disease_labels_are_converted_when_the_database_opens(settings):
+    settings.data_dir.mkdir(parents=True, exist_ok=True)
+    db = Database(settings.db_path)
+    pond = db.insert("ponds", {"name": "P", "created_at": 0})
+    rid = db.insert("rounds", {"pond_id": pond, "sampled_at": "2026-10-01", "created_at": 0,
+                               "snapshot_json": '{"classes": {"Healthy": 1, "Aeromonas": 0, "TiLV": 2}}'})
+    fid = db.insert("fish", {"round_id": rid, "code": "F01", "cls": "TiLV", "tech_signs": "aeromonas",
+                             "reasons_json": '["Signs consistent with TiLV at 80% confidence."]', "created_at": 0})
+    db.insert("photos", {"fish_id": fid, "side": "A", "path": "x", "ok": 1, "created_at": 0,
+                         "result_json": '{"top": {"cls": "Healthy", "conf": 0.9}}'})
+    db.close()
+    db = Database(settings.db_path)
+    f = db.one("SELECT * FROM fish WHERE id = ?", (fid,))
+    assert (f["cls"], f["tech_signs"]) == ("Skin erosion", "red_sores")
+    assert "TiLV" not in f["reasons_json"]
+    snap = db.one("SELECT snapshot_json FROM rounds WHERE id = ?", (rid,))["snapshot_json"]
+    assert '"Skin erosion": 2' in snap and "Aeromonas" not in snap
+    assert '"No visible defect"' in db.one("SELECT result_json FROM photos")["result_json"]
