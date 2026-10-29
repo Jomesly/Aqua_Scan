@@ -10,8 +10,14 @@ import logging
 import threading
 from pathlib import Path
 
+import cv2
+
 log = logging.getLogger(__name__)
 EXPECTED = {"Healthy", "Aeromonas", "TiLV"}
+# Roboflow exports stretch every training image to 640x640 (no letterbox) by default, so photos are
+# stretched the same way before screening. On public Aeromonas/TiLV photos this found more fish and
+# stopped diseased fish in long, thin photos from being called Healthy.
+IMGSZ = 640
 
 
 class Screener:
@@ -43,12 +49,16 @@ class Screener:
     def predict(self, img_bgr, conf):
         if not self.available:
             return []
+        h, w = img_bgr.shape[:2]
+        square = cv2.resize(img_bgr, (IMGSZ, IMGSZ))
         with self._lock:  # Ultralytics models are not thread-safe
-            res = self._model.predict(img_bgr, conf=conf, imgsz=640, verbose=False)[0]
+            res = self._model.predict(square, conf=conf, imgsz=IMGSZ, verbose=False)[0]
+        sx, sy = w / IMGSZ, h / IMGSZ
         out = []
         for box in res.boxes:
+            x1, y1, x2, y2 = box.xyxy[0].tolist()
             out.append({"cls": self.names[int(box.cls)], "conf": round(float(box.conf), 4),
-                        "box": [round(float(v), 1) for v in box.xyxy[0].tolist()]})
+                        "box": [round(x1 * sx, 1), round(y1 * sy, 1), round(x2 * sx, 1), round(y2 * sy, 1)]})
         return sorted(out, key=lambda d: d["conf"], reverse=True)
 
     def info(self):

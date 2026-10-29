@@ -53,7 +53,7 @@ Demo mode seeds two ponds with completed rounds (all marked **Demo data**). Pond
 
 **Demo tips**
 - *Real fish on the board:* print the board (Maintenance → Board → PDF, at 100 % scale) and run a round with "Sampling board" on.
-- *Public dataset photos:* when creating the round, choose "Public / test photos (no board)". Fish are screened, but length and weight show "No scale: not measured".
+- *Public dataset photos:* when creating the round, choose "Public / test photos (no board)". Fish are screened, but length and weight show "No scale: not measured". Checked TiLV, Aeromonas and Healthy pairs are in `docs/demo-photos/`. In this mode a photo that fails the quality check is still screened, with a note; with the board it must be retaken.
 
 ## Field use
 

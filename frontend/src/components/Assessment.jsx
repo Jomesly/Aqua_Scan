@@ -1,7 +1,10 @@
 import { CheckCircle2, Circle, XCircle } from 'lucide-react';
-import { HealthBadge, ProvisionalTag, ReadinessBadge } from './Status';
+import { HealthBadge, ProvisionalTag, ReadinessBadge, healthTone } from './Status';
 import { Card, Notice, Stat } from './ui';
 import { fmtNum, fmtPct } from '../lib/format';
+
+// The API writes comparisons as ASCII; show the proper math signs.
+const mathSigns = (s) => (typeof s === 'string' ? s.replace(/>=/g, '≥').replace(/<=/g, '≤') : s);
 
 export function CriteriaList({ criteria }) {
   if (!criteria?.length) return null;
@@ -17,7 +20,7 @@ export function CriteriaList({ criteria }) {
               {c.label}
               <span className="sr-only">{c.passed ? ' met' : ' not met'}</span>
             </span>
-            <span className="val">{c.value}<small>{c.target}</small></span>
+            <span className="val">{mathSigns(c.value)}<small>{mathSigns(c.target)}</small></span>
           </li>
         );
       })}
@@ -54,7 +57,7 @@ export function RoundAssessment({ a, live }) {
             {Object.entries(s.status_counts).map(([k, v]) => (
               <div key={k} className="bar-row">
                 <HealthBadge value={k} />
-                <span className="bar-track"><span className="bar-fill" style={{ width: `${s.n_fish ? (v / s.n_fish) * 100 : 0}%` }} /></span>
+                <span className="bar-track"><span className={`bar-fill tone-${healthTone(k)}`} style={{ width: `${s.n_fish ? (v / s.n_fish) * 100 : 0}%` }} /></span>
                 <span className="num">{v}</span>
               </div>
             ))}

@@ -1,6 +1,8 @@
 import React from 'react';
 import { createRoot } from 'react-dom/client';
 import { createBrowserRouter, RouterProvider } from 'react-router-dom';
+import '@fontsource-variable/geist';
+import '@fontsource-variable/geist-mono';
 import './styles.css';
 import Shell, { RoleGate } from './components/Shell';
 import { ToastProvider } from './components/ui';

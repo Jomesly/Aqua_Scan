@@ -157,10 +157,17 @@ function Capture({ round, reload, setRound }) {
         <span className="step on"><b>2</b>Photograph and weigh</span><span className="sep" />
         <span className="step"><b>3</b>Complete</span>
       </div>
-      <Notice kind="info">
-        For each fish: photograph <strong>Side A</strong> and <strong>Side B</strong> on the board, then enter the scale weight and the
-        ruler length. A photo that fails the check shows why. Retake it while the fish is still on the board.
-      </Notice>
+      {round.board_mode ? (
+        <Notice kind="info">
+          For each fish: photograph <strong>Side A</strong> and <strong>Side B</strong> on the board, then enter the scale weight and the
+          ruler length. A photo that fails the check shows why. Retake it while the fish is still on the board.
+        </Notice>
+      ) : (
+        <Notice kind="info">
+          For each fish: upload a photo of <strong>Side A</strong> and, if you have one, <strong>Side B</strong>. Each photo is screened for
+          signs of Aeromonas and TiLV. Without the board, length and weight are not measured.
+        </Notice>
+      )}
       {round.fish.length === 0 && <p className="muted">No fish yet. Add the first sampled fish.</p>}
       <div className="fish-list">
         {round.fish.map((f) => (

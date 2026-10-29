@@ -98,3 +98,26 @@ class TwoBoxScreener(FakeScreener):
 def test_disease_box_in_same_photo_takes_precedence(tmp_path):
     r = pipeline.process_photo(board_photo(), True, T, TwoBoxScreener(), None, tmp_path / "e.jpg")
     assert r["top"] == {"cls": "TiLV", "conf": 0.4}
+
+
+def test_no_board_blurry_photo_is_still_screened_with_a_note(tmp_path):
+    # Public/test photos are not taken on the board; the quality thresholds are set for board photos,
+    # so a quality problem is shown as a note instead of blocking the screening.
+    r = pipeline.process_photo(board_photo(warp=False, blur=True), False, T, FakeScreener("TiLV", 0.8), None,
+                               tmp_path / "f.jpg")
+    assert r["ok"] and r["top"] == {"cls": "TiLV", "conf": 0.8}
+    assert any("blurry" in x.lower() for x in r["reasons"])
+
+
+def test_board_blurry_photo_still_needs_retake(tmp_path):
+    r = pipeline.process_photo(board_photo(blur=True), True, T, FakeScreener(), None, tmp_path / "g.jpg")
+    assert not r["ok"] and r["top"] is None
+    assert any("blurry" in x.lower() for x in r["reasons"])
+
+
+def test_small_photo_is_annotated_at_a_readable_size(tmp_path):
+    import cv2
+
+    small = cv2.resize(board_photo(warp=False), (480, 200))
+    pipeline.process_photo(small, False, T, FakeScreener("TiLV", 0.8), None, tmp_path / "h.jpg")
+    assert max(cv2.imread(str(tmp_path / "h.jpg")).shape[:2]) >= 960
