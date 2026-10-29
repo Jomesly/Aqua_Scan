@@ -15,11 +15,11 @@ from pathlib import Path
 
 import cv2
 
-from ..rules.health import EROSION, NO_DEFECT, RED_SORES
+from ..rules.health import EROSION, HEALTHY, RED_SORES
 
 log = logging.getLogger(__name__)
 # Training label -> visible defect shown in the app.
-DEFECT_OF_LABEL = {"Healthy": NO_DEFECT, "TiLV": EROSION, "Aeromonas": RED_SORES}
+DEFECT_OF_LABEL = {"Healthy": HEALTHY, "TiLV": EROSION, "Aeromonas": RED_SORES}
 EXPECTED = set(DEFECT_OF_LABEL)
 # Roboflow exports stretch every training image to 640x640 (no letterbox) by default, so photos are
 # stretched the same way before screening. On public Aeromonas/TiLV photos this found more fish and

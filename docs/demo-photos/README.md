@@ -7,7 +7,7 @@ Public tilapia photos for showing defect screening without a sampling board. Cre
 |---|---|---|
 | fish1, fish2 | Skin erosion | Refer to technician |
 | fish3, fish4 | Red sores | Refer to technician |
-| fish5, fish6 | No visible defect | Normal |
+| fish5, fish6 | Healthy | Normal |
 
 Each photo was checked through the app's pipeline with `yolov8s_best.pt` on 2026-10-28 (confidence 72–97 %).
 

@@ -11,11 +11,11 @@ WATCH = "Watch"
 REFER = "Refer to technician"
 UNSCREENED = "Not screened"
 INSUFFICIENT = "Insufficient data"
-NO_DEFECT = "No visible defect"
+HEALTHY = "Healthy"
 EROSION = "Skin erosion"
 RED_SORES = "Red sores"
 DEFECT_CLASSES = (EROSION, RED_SORES)
-CLASSES = (NO_DEFECT, *DEFECT_CLASSES)
+CLASSES = (HEALTHY, *DEFECT_CLASSES)
 # What each flag looks like on the fish, for reasons and help text.
 DEFECT_DESCRIPTIONS = {
     EROSION: "worn or eroded skin, missing scales or pale patches",

@@ -20,7 +20,7 @@ const READINESS = {
 };
 
 const CLASSES = {
-  'No visible defect': { tone: 'good', Icon: ShieldCheck },
+  Healthy: { tone: 'good', Icon: ShieldCheck },
   'Skin erosion': { tone: 'critical', Icon: Eraser },
   'Red sores': { tone: 'critical', Icon: Droplet },
 };

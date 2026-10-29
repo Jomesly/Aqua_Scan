@@ -17,7 +17,7 @@ PAPER_TABLE_10 = {
         ("F1-score", [0.770, 0.673, 0.717], "max"),
         ("mAP50", [0.683, 0.637, 0.641], "max"),
         ("mAP50-95", [0.470, 0.406, 0.440], "max"),
-        ("AP50, No visible defect (trained as Healthy)", [0.995, 0.984, 0.995], "max"),
+        ("AP50, Healthy", [0.995, 0.984, 0.995], "max"),
         ("AP50, Red sores (trained as Aeromonas)", [0.302, 0.298, 0.260], "max"),
         ("AP50, Skin erosion (trained as TiLV)", [0.751, 0.631, 0.667], "max"),
         ("CPU time per image (ms)", [294.7, 265.6, 259.1], "min"),

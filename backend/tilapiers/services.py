@@ -565,7 +565,7 @@ class Services:
                 rp.append((harvest.APPROACHING if sys_r == harvest.SIZE_REVIEW else sys_r, r["tech_readiness"]))
         fsrc = "" if include_demo else " AND f.source = 'real'"
         fish = self.db.all("SELECT f.* FROM fish f JOIN rounds r ON r.id = f.round_id WHERE 1 = 1" + fsrc)
-        tech_map = {"none": health.NO_DEFECT, "erosion": health.EROSION, "red_sores": health.RED_SORES,
+        tech_map = {"none": health.HEALTHY, "erosion": health.EROSION, "red_sores": health.RED_SORES,
                     "other": "Other defect"}
         screen_labels = list(health.CLASSES)
         screen_pairs = [(f["cls"] or "Not screened", tech_map[f["tech_signs"]]) for f in fish if f["tech_signs"]]

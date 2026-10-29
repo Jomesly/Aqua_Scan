@@ -11,17 +11,17 @@ def test_condition_factor_formula():
 
 
 def test_healthy_with_k_in_range_is_normal():
-    assert health.fish_status("No visible defect", 0.9, 1.2, T)["status"] == health.NORMAL
+    assert health.fish_status("Healthy", 0.9, 1.2, T)["status"] == health.NORMAL
 
 
 def test_healthy_with_low_k_is_watch():
-    r = health.fish_status("No visible defect", 0.9, 0.8, T)
+    r = health.fish_status("Healthy", 0.9, 0.8, T)
     assert r["status"] == health.WATCH
     assert any("K" in x for x in r["reasons"])
 
 
 def test_healthy_without_k_is_normal_and_says_k_not_measured():
-    r = health.fish_status("No visible defect", 0.9, None, T)
+    r = health.fish_status("Healthy", 0.9, None, T)
     assert r["status"] == health.NORMAL
     assert any("K not measured" in x for x in r["reasons"])
 

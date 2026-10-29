@@ -7,10 +7,10 @@ or test photos) the marker step is skipped and length/area are not measured.
 
 import cv2
 
-from ..rules.health import EROSION, NO_DEFECT, RED_SORES
+from ..rules.health import EROSION, HEALTHY, RED_SORES
 from . import board, outline, quality
 
-COLORS = {NO_DEFECT: (80, 160, 40), RED_SORES: (30, 30, 200), EROSION: (20, 120, 230)}
+COLORS = {HEALTHY: (80, 160, 40), RED_SORES: (30, 30, 200), EROSION: (20, 120, 230)}
 
 
 def _tag(img, text, x, y, color):
@@ -64,9 +64,9 @@ def process_photo(img, board_mode, t, screener, seg_model, annotated_path):
         dets = screener.predict(crop, t.det_conf)
         if not dets:
             reasons.append(f"No fish class above the detection threshold ({t.det_conf:.0%}): fish not screened.")
-    # A defect box wins over a whole-fish "no visible defect" box in the same photo, as it does
+    # A defect box wins over a whole-fish Healthy box in the same photo, as it does
     # across the two sides (paper Step 10): missing a defect is the costlier error.
-    disease = [d for d in dets if d["cls"] != NO_DEFECT]
+    disease = [d for d in dets if d["cls"] != HEALTHY]
     best = max(disease or dets, key=lambda d: d["conf"]) if dets else None
     top = {"cls": best["cls"], "conf": best["conf"]} if best else None
 
@@ -100,7 +100,7 @@ def merge_sides(results):
     """Combine both photos of a fish (paper Figure 10, steps 6 and 10)."""
     good = [r for r in results if r and r.get("ok")]
     tops = [r["top"] for r in good if r.get("top")]
-    disease = [x for x in tops if x["cls"] != NO_DEFECT]
+    disease = [x for x in tops if x["cls"] != HEALTHY]
     pick = max(disease or tops, key=lambda x: x["conf"]) if tops else None
     lengths = [r["length_cm"] for r in good if r.get("length_cm") is not None]
     areas = [r["area_cm2"] for r in good if r.get("area_cm2") is not None]

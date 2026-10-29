@@ -24,7 +24,7 @@ export function fmtPct(value, digits = 0) {
 export const todayIso = () => new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10);
 
 export const SIGNS_LABEL = {
-  none: 'No visible defect',
+  none: 'Healthy (no visible defect)',
   erosion: 'Skin erosion (eroded skin, missing scales, pale patches)',
   red_sores: 'Red sores (bleeding sores, ulcers, reddened fins)',
   other: 'Other defect',

@@ -10,7 +10,7 @@ class FakeScreener:
     available = True
     name = "fake"
 
-    def __init__(self, cls="No visible defect", conf=0.9):
+    def __init__(self, cls="Healthy", conf=0.9):
         self.cls, self.conf = cls, conf
 
     def predict(self, img, conf):
@@ -23,25 +23,25 @@ def _side(cls, conf, L=None, A=None):
 
 
 def test_merge_disease_on_one_side_wins():
-    m = pipeline.merge_sides([_side("No visible defect", 0.9, 20, 90), _side("Skin erosion", 0.6, 22, 94)])
+    m = pipeline.merge_sides([_side("Healthy", 0.9, 20, 90), _side("Skin erosion", 0.6, 22, 94)])
     assert (m["cls"], m["conf"]) == ("Skin erosion", 0.6)
     assert m["length_cm"] == 21 and m["area_cm2"] == 92 and m["sides"] == 2
 
 
 def test_merge_two_healthy_takes_max_confidence():
-    m = pipeline.merge_sides([_side("No visible defect", 0.7), _side("No visible defect", 0.9)])
-    assert (m["cls"], m["conf"]) == ("No visible defect", 0.9)
+    m = pipeline.merge_sides([_side("Healthy", 0.7), _side("Healthy", 0.9)])
+    assert (m["cls"], m["conf"]) == ("Healthy", 0.9)
 
 
 def test_merge_single_side():
-    m = pipeline.merge_sides([_side("No visible defect", 0.8, 20, 90)])
+    m = pipeline.merge_sides([_side("Healthy", 0.8, 20, 90)])
     assert m["sides"] == 1 and m["length_cm"] == 20
 
 
 def test_merge_ignores_failed_photos():
     bad = {"ok": False, "top": {"cls": "Skin erosion", "conf": 0.99}, "length_cm": 50, "area_cm2": 1}
-    m = pipeline.merge_sides([bad, _side("No visible defect", 0.8, 20, 90)])
-    assert m["cls"] == "No visible defect" and m["sides"] == 1
+    m = pipeline.merge_sides([bad, _side("Healthy", 0.8, 20, 90)])
+    assert m["cls"] == "Healthy" and m["sides"] == 1
 
 
 def test_board_photo_is_screened_and_measured(tmp_path):
@@ -54,7 +54,7 @@ def test_board_photo_is_screened_and_measured(tmp_path):
 
 def test_no_board_photo_is_screened_but_not_measured(tmp_path):
     r = pipeline.process_photo(board_photo(warp=False), False, T, FakeScreener(), None, tmp_path / "b.jpg")
-    assert r["ok"] and r["top"]["cls"] == "No visible defect"
+    assert r["ok"] and r["top"]["cls"] == "Healthy"
     assert r["length_cm"] is None and r["area_cm2"] is None
 
 
@@ -86,11 +86,11 @@ def test_real_model_loads_and_runs_when_present(tmp_path):
 
 
 class TwoBoxScreener(FakeScreener):
-    """Whole fish boxed "no visible defect" with high confidence plus a lesion boxed "skin erosion"."""
+    """Whole fish boxed Healthy with high confidence plus a lesion boxed "skin erosion"."""
 
     def predict(self, img, conf):
         h, w = img.shape[:2]
-        dets = [{"cls": "No visible defect", "conf": 0.8, "box": [0, 0, w, h]},
+        dets = [{"cls": "Healthy", "conf": 0.8, "box": [0, 0, w, h]},
                 {"cls": "Skin erosion", "conf": 0.4, "box": [0, 0, w // 4, h // 4]}]
         return [d for d in dets if d["conf"] >= conf]
 

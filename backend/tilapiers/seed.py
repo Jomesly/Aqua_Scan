@@ -31,7 +31,7 @@ FAQS = """## Setting up the sampling station
 ## What the defect flags mean
 - **Skin erosion**: worn or eroded skin, missing scales or pale patches.
 - **Red sores**: red, bleeding sores, ulcers or reddened fins.
-- **No visible defect**: nothing was flagged on the photographed sides.
+- **Healthy**: no visible defect was flagged on the photographed sides.
 
 ## Reading the Harvest readiness status
 - The status combines five indicators: the share of fish at the target size, weight uniformity (CV), growth, condition factor K, and days of culture.
@@ -113,7 +113,7 @@ def seed_demo(svc):
                 ruler = (w / 0.0145) ** (1 / 3) * rng.uniform(0.985, 1.015)
                 img_len = ruler * rng.uniform(0.97, 1.03)
                 area = 0.21 * img_len ** 2 * rng.uniform(0.96, 1.04)
-                cls, conf = health.NO_DEFECT, round(rng.uniform(0.82, 0.97), 3)
+                cls, conf = health.HEALTHY, round(rng.uniform(0.82, 0.97), 3)
                 if p_i == 1 and latest and k in (3, 11):
                     cls, conf = health.RED_SORES, (0.62, 0.71)[k == 11]
                 fish = svc.add_fish(rnd["id"], {"scale_weight_g": round(w, 1), "ruler_length_cm": round(ruler, 1)},
@@ -140,7 +140,7 @@ def seed_demo(svc):
             svc.set_round_assessment(rid, tech_h if tech_h in ("Normal", "Watch", "Refer to technician") else None,
                                      tech_r, "technician")
             for f in svc.db.all("SELECT id, cls FROM fish WHERE round_id = ? LIMIT 6", (rid,)):
-                svc.review_fish(f["id"], "none" if f["cls"] == health.NO_DEFECT else "red_sores", None, "technician")
+                svc.review_fish(f["id"], "none" if f["cls"] == health.HEALTHY else "red_sores", None, "technician")
         elif p_i == 0:
             svc.set_round_assessment(rid, health.NORMAL, "Ready", "technician")
     svc.db.set_setting("demo_seeded", json.dumps(True))

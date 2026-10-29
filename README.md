@@ -8,7 +8,7 @@ Tilapiers is a web app for the caretaker's sampling round. The caretaker photogr
 
 1. checks image quality, finds the markers and corrects the photo to a flat view with a known scale;
 2. outlines the fish and measures its **length and area**;
-3. screens it with the team's YOLO model and flags visible skin defects: **Skin erosion** (eroded skin, missing scales, pale patches), **Red sores** (bleeding sores, ulcers, reddened fins) or **No visible defect**. It does not name a disease;
+3. screens it with the team's YOLO model and flags visible skin defects: **Skin erosion** (eroded skin, missing scales, pale patches), **Red sores** (bleeding sores, ulcers, reddened fins) or **Healthy** (no visible defect). It does not name a disease;
 4. estimates its **weight** by regression and computes the condition factor K;
 5. gives the fish and the pond a **Health status** (Normal / Watch / Refer to technician) and the pond a **Harvest readiness status** (Not Ready / Approaching / Ready, with health as a clearance check).
 

@@ -116,7 +116,8 @@ def test_old_disease_labels_are_converted_when_the_database_opens(settings):
     fid = db.insert("fish", {"round_id": rid, "code": "F01", "cls": "TiLV", "tech_signs": "aeromonas",
                              "reasons_json": '["Signs consistent with TiLV at 80% confidence."]', "created_at": 0})
     db.insert("photos", {"fish_id": fid, "side": "A", "path": "x", "ok": 1, "created_at": 0,
-                         "result_json": '{"top": {"cls": "Healthy", "conf": 0.9}}'})
+                         "result_json": '{"top": {"cls": "No visible defect", "conf": 0.9}}'})
+    fid2 = db.insert("fish", {"round_id": rid, "code": "F02", "cls": "No visible defect", "created_at": 0})
     db.close()
     db = Database(settings.db_path)
     f = db.one("SELECT * FROM fish WHERE id = ?", (fid,))
@@ -124,4 +125,5 @@ def test_old_disease_labels_are_converted_when_the_database_opens(settings):
     assert "TiLV" not in f["reasons_json"]
     snap = db.one("SELECT snapshot_json FROM rounds WHERE id = ?", (rid,))["snapshot_json"]
     assert '"Skin erosion": 2' in snap and "Aeromonas" not in snap
-    assert '"No visible defect"' in db.one("SELECT result_json FROM photos")["result_json"]
+    assert '"Healthy"' in db.one("SELECT result_json FROM photos")["result_json"]
+    assert db.one("SELECT cls FROM fish WHERE id = ?", (fid2,))["cls"] == "Healthy"
